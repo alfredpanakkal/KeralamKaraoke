@@ -6,6 +6,12 @@ __pycache__/
 venv/
 karaoke-env/
 
+# Test / tooling caches
+.pytest_cache/
+
+# Agent scratch space (ledger, briefs, review packages)
+.superpowers/
+
 # Project outputs
 uploads/
 separated/
