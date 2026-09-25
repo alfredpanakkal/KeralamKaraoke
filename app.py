@@ -1,0 +1,3 @@
+"""Streamlit UI entry point."""
+def main(): ...
+if __name__ == "__main__": main()

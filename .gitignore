@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+karaoke-env/
+
+# Project outputs
+uploads/
+separated/
+karaoke_out/
+karaoke_cache/
+
+# Demucs model cache (can be large)
+.demucs/
+
+# IDE
+.vscode/
+.idea/
