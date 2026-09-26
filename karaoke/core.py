@@ -47,6 +47,17 @@ def safe_upload_name(name: str) -> str:
     return cleaned.lstrip(".") or "upload"
 
 
+MAX_UPLOAD_BYTES = 150 * 1024 * 1024
+
+
+def validate_upload_size(size_bytes: int) -> tuple[bool, str]:
+    """Guard against disk exhaustion and demucs timeout on huge files."""
+    if size_bytes > MAX_UPLOAD_BYTES:
+        mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+        return False, f"File exceeds the {mb} MB limit."
+    return True, ""
+
+
 def build_output_paths(
     song_name: str, base_dirs: dict, model: str = "htdemucs"
 ) -> dict:

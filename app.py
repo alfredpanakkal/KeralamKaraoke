@@ -5,7 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from karaoke.core import STEMS, build_output_paths, safe_upload_name
+from karaoke.core import STEMS, build_output_paths, safe_upload_name, validate_upload_size
 from karaoke.demucs_runner import separate_stems, separate_vocals
 from karaoke.pitch_shift import pitch_shift_cached
 
@@ -75,6 +75,11 @@ def main() -> None:
 
     if uploaded is None:
         st.info("Upload a song to begin.")
+        return
+
+    ok, msg = validate_upload_size(uploaded.size)
+    if not ok:
+        st.error(msg)
         return
 
     if (

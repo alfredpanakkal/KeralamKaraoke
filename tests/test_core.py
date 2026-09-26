@@ -118,3 +118,11 @@ def test_safe_upload_name_strips_trailing_dots_and_caps_length():
     assert a == "song.mp3"
     long_name = "x" * 300 + ".mp3"
     assert len(karaoke.core.safe_upload_name(long_name)) <= 104  # 100-stem cap + ext
+
+
+def test_upload_too_large_is_rejected():
+    limit = 150 * 1024 * 1024
+    ok, msg = karaoke.core.validate_upload_size(limit + 1)
+    assert not ok and "150" in msg
+    ok, _ = karaoke.core.validate_upload_size(limit)
+    assert ok
