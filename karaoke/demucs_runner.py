@@ -11,10 +11,20 @@ TIMEOUT_SECONDS = 1800
 
 
 def run_demucs(argv: list[str]) -> tuple[int, str, str]:
-    """Run the demucs CLI, capturing output. Returns (returncode, stdout, stderr)."""
-    result = subprocess.run(
-        argv, capture_output=True, text=True, timeout=TIMEOUT_SECONDS
-    )
+    """Run the demucs CLI, capturing output. Returns (returncode, stdout, stderr).
+
+    Raises RuntimeError on timeout so the UI shows a clear message
+    instead of a bare subprocess exception.
+    """
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, timeout=TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Demucs timed out after {TIMEOUT_SECONDS} seconds. "
+            "Try a shorter song or check that the GPU is being used."
+        ) from exc
     return result.returncode, result.stdout, result.stderr
 
 

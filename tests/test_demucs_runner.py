@@ -97,3 +97,10 @@ def test_separate_stems_raises_when_a_stem_is_missing(tmp_path):
             karaoke.demucs_runner.separate_stems(
                 str(tmp_path / "song.mp3"), str(tmp_path / "separated"), "htdemucs"
             )
+
+
+def test_run_demucs_wraps_timeout_in_runtimeerror():
+    timeout = subprocess.TimeoutExpired(cmd="demucs", timeout=1800)
+    with patch.object(subprocess, "run", side_effect=timeout):
+        with pytest.raises(RuntimeError, match="timed out"):
+            karaoke.demucs_runner.run_demucs(["demucs"])
