@@ -1,9 +1,10 @@
-"""Pure logic: filename sanitisation, path construction, CLI argv building."""
+"""Filename and path logic, Demucs argv, and the filesystem work around them."""
 
 import os
 import re
 import sys
 from pathlib import Path
+from stat import S_ISREG
 
 # Characters that are illegal in Windows filenames. Stripped rather than
 # replaced so "My Song" -> "My_Song" stays readable.
@@ -56,6 +57,16 @@ def validate_upload_size(size_bytes: int) -> tuple[bool, str]:
         mb = MAX_UPLOAD_BYTES // (1024 * 1024)
         return False, f"File exceeds the {mb} MB limit."
     return True, ""
+
+
+# The models the UI offers: the label is what the user reads, the value is what
+# Demucs is invoked with. The first entry is the default, so the app starts on
+# plain htdemucs.
+MODEL_DEFAULT = "htdemucs"
+MODEL_OPTIONS = {
+    "htdemucs (fast, good enough for karaoke)": "htdemucs",
+    "htdemucs_ft (best quality, roughly 4x slower)": "htdemucs_ft",
+}
 
 
 def build_output_paths(
@@ -118,3 +129,111 @@ def build_stems_argv(input_path: str, separated_dir: str, model: str) -> list[st
         "--filename", "{track}_{stem}.{ext}",
         input_path,
     ]
+
+
+def probe_audio(source) -> dict | None:
+    """Return {"duration", "samplerate", "channels", "format"} for an audio
+    file, or None when it cannot be read.
+
+    `source` is a path (str/Path) or an open binary file object. Never raises:
+    an unreadable file is reported as None so the caller can warn and let
+    Demucs produce the authoritative error. May move a file object's read
+    position; callers pass objects they do not read positionally.
+    """
+    try:
+        import soundfile as sf
+        info = sf.info(source)
+    except Exception:
+        return None
+    return {
+        "duration": float(info.duration),
+        "samplerate": int(info.samplerate),
+        "channels": int(info.channels),
+        "format": str(info.format),
+    }
+
+
+# Rough processing throughput of a mid-range CUDA GPU, measured on an
+# RTX 4050: about 45 seconds of audio per minute of processing. CPU-only is
+# several times slower. The copy is advisory, never a promise.
+ESTIMATE_SECONDS_PER_MINUTE = 45
+
+
+def estimate_minutes(duration_seconds: float) -> int:
+    """Rough minutes to process `duration_seconds` of audio; at least 1."""
+    if duration_seconds <= 0:
+        return 1
+    return max(1, round(duration_seconds / ESTIMATE_SECONDS_PER_MINUTE))
+
+
+def clear_generated_files(dirs) -> tuple[int, list[str]]:
+    """Delete the contents of each directory in `dirs`, keeping the
+    directories themselves.
+
+    Recurses into subdirectories (e.g. separated/htdemucs/<song>/) and prunes
+    the subdirectories it empties. Returns (files_deleted, failures) where
+    each failure is a "<path>: <reason>" string. Never raises: a locked or
+    undeletable file is reported, not propagated.
+    """
+    deleted = 0
+    failures: list[str] = []
+    for directory in dirs:
+        root = Path(directory)
+        if not root.is_dir():
+            continue  # a directory the app has not created yet
+        # Bottom-up: a subdirectory is emptied and pruned before its parent is
+        # visited, so the only rmdir that can fail is one holding a locked
+        # file, and that file is already in `failures`.
+        for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
+            for name in filenames:
+                path = Path(dirpath) / name
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    failures.append(f"{path}: {exc.strerror or exc}")
+                else:
+                    deleted += 1
+            if Path(dirpath) != root:
+                try:
+                    os.rmdir(dirpath)
+                except OSError:
+                    pass
+    return deleted, failures
+
+
+CACHE_LIMIT_BYTES = 2 * 1024 ** 3
+
+
+def enforce_cache_limit(root: str, limit_bytes: int = CACHE_LIMIT_BYTES) -> int:
+    """Delete least-recently-modified files under `root` until the total is
+    within `limit_bytes`. Returns bytes freed. Never raises: an undeletable
+    file is skipped. Newest files are kept — sorting is by
+    (mtime, str(path)) so ties are deterministic."""
+    entries = []
+    for path in Path(root).rglob("*"):
+        try:
+            info = path.stat()
+        except OSError:
+            # Gone, or held open with deny-share semantics so even the metadata
+            # read is refused. Either way, skip this entry and keep sweeping:
+            # the walk is best effort, so one hostile entry cannot stop it.
+            continue
+        if not S_ISREG(info.st_mode):
+            continue  # a per-song directory
+        entries.append((info.st_mtime, str(path), info.st_size))
+    entries.sort()
+
+    total = sum(size for _mtime, _path, size in entries)
+    freed = 0
+    for _mtime, name, size in entries:
+        if total <= limit_bytes:
+            break
+        try:
+            os.unlink(name)
+        except OSError:
+            # Locked or already gone. The bytes were not freed, so `total` is
+            # unchanged and the next-oldest file is tried instead.
+            continue
+        total -= size
+        freed += size
+    return freed

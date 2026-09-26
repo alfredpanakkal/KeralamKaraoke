@@ -5,15 +5,25 @@ from pathlib import Path
 
 import streamlit as st
 
-from karaoke.core import STEMS, build_output_paths, safe_upload_name, validate_upload_size
+from karaoke.core import (
+    MODEL_OPTIONS,
+    STEMS,
+    build_output_paths,
+    clear_generated_files,
+    enforce_cache_limit,
+    estimate_minutes,
+    probe_audio,
+    safe_upload_name,
+    validate_upload_size,
+)
 from karaoke.demucs_runner import separate_stems, separate_vocals
 from karaoke.pitch_shift import pitch_shift_cached
 
-UPLOAD_DIR = Path("uploads")
-OUTPUT_DIR = Path("karaoke_out")
-SEPARATED_DIR = Path("separated")
-CACHE_DIR = Path("karaoke_cache")
-MODEL = "htdemucs"
+ROOT = Path(__file__).resolve().parent
+UPLOAD_DIR = ROOT / "uploads"
+OUTPUT_DIR = ROOT / "karaoke_out"
+SEPARATED_DIR = ROOT / "separated"
+CACHE_DIR = ROOT / "karaoke_cache"
 
 MODE_KARAOKE = "Karaoke (remove vocals)"
 MODE_STEMS = "Stems (vocals, drums, bass, other)"
@@ -25,18 +35,37 @@ BASE_DIRS = {
 }
 
 # Session keys that describe the *current* song. Cleared wholesale when the
-# user picks a different file or mode, otherwise song A's output keeps
+# user picks a different file, mode, or model, otherwise song A's output keeps
 # rendering under song B's name.
-SONG_KEYS = ("current_file", "song_name", "instrumental_path", "stems_paths", "paths")
+SONG_KEYS = (
+    "current_file",
+    "model",
+    "song_name",
+    "instrumental_path",
+    "stems_paths",
+    "paths",
+)
 
 
-def reset_song_state(uploaded_name: str, mode: str) -> None:
+def purge_song_state() -> None:
+    """Forget the current song and its cached download bytes.
+
+    The files those keys point at may be deleted in the same breath, so
+    nothing that reads them can be left behind in the session.
+    """
     for key in SONG_KEYS:
         st.session_state.pop(key, None)
     for key in [k for k in st.session_state if k.startswith("_dl_bytes:")]:
         st.session_state.pop(key, None)
+
+
+def reset_song_state(uploaded_name: str, mode: str, model: str | None = None) -> None:
+    """Start a new song, and a new model if one was given."""
+    purge_song_state()
     st.session_state.current_file = uploaded_name
     st.session_state.mode = mode
+    if model is not None:
+        st.session_state.model = model
 
 
 def _cached_bytes(path: Path) -> bytes:
@@ -59,12 +88,44 @@ def main() -> None:
     for folder in (UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR):
         folder.mkdir(parents=True, exist_ok=True)
 
+    # Created above the uploader so a click is handled before the results
+    # below re-read a path this run has just deleted.
+    st.sidebar.caption(
+        "Deletes everything in uploads, karaoke_out, separated, and "
+        "karaoke_cache, including the copy the app made of your upload. "
+        "Your original file is not touched."
+    )
+    if st.sidebar.button("Clear generated files"):
+        deleted, failures = clear_generated_files(
+            [UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR]
+        )
+        # Purge before reporting: nothing below may read a deleted path.
+        purge_song_state()
+        if failures:
+            more = f", and {len(failures) - 3} more" if len(failures) > 3 else ""
+            st.sidebar.warning(
+                f"Deleted {deleted} file(s), but {len(failures)} could not be "
+                f"deleted: {'; '.join(failures[:3])}{more}"
+            )
+        else:
+            st.sidebar.success(f"Deleted {deleted} file(s)")
+
     uploaded = st.file_uploader("Choose a song file", type=["mp3", "wav"])
     mode = st.radio(
         "Separation mode",
         options=[MODE_KARAOKE, MODE_STEMS],
         horizontal=True,
     )
+    model_label = st.selectbox(
+        "Demucs model",
+        list(MODEL_OPTIONS),
+        help=(
+            "The first run with any model downloads its weights. htdemucs_ft "
+            "runs four models instead of one, so it takes about four times as "
+            "long."
+        ),
+    )
+    model = MODEL_OPTIONS[model_label]
     semitones = st.slider(
         "Pitch shift (semitones)",
         min_value=-6,
@@ -82,11 +143,27 @@ def main() -> None:
         st.error(msg)
         return
 
+    # The upload itself, not a copy of it: an UploadedFile is an io.BytesIO, so
+    # the header read costs a seek and nothing else, on every rerun.
+    facts = probe_audio(uploaded)
+    est_minutes = estimate_minutes(facts["duration"]) if facts else None
+    if facts is None:
+        st.warning(
+            "Could not read this file as audio. If separation fails, try a "
+            "different mp3 or wav."
+        )
+    else:
+        st.caption(
+            f"{uploaded.size / (1024 * 1024):.1f} MB · "
+            f"{facts['duration']:.0f}s of audio · about {est_minutes} min to process"
+        )
+
     if (
         st.session_state.get("current_file") != uploaded.name
         or st.session_state.get("mode") != mode
+        or st.session_state.get("model") != model
     ):
-        reset_song_state(uploaded.name, mode)
+        reset_song_state(uploaded.name, mode, model)
 
     if st.button("Generate", type="primary"):
         try:
@@ -96,17 +173,22 @@ def main() -> None:
 
             song_name = Path(safe_name).stem
             st.session_state.song_name = song_name
-            st.session_state.paths = build_output_paths(song_name, BASE_DIRS, model=MODEL)
+            st.session_state.paths = build_output_paths(
+                song_name, BASE_DIRS, model=model
+            )
+
+            # Advisory: an estimate from a laptop GPU, so word it as one.
+            eta = f"about {est_minutes} min" if est_minutes else "1-3 min"
 
             if mode == MODE_KARAOKE:
-                with st.spinner("Separating vocals from instrumental... (1-3 min)"):
+                with st.spinner(f"Separating vocals from instrumental... ({eta})"):
                     st.session_state.instrumental_path = separate_vocals(
-                        str(input_path), str(SEPARATED_DIR), MODEL
+                        str(input_path), str(SEPARATED_DIR), model
                     )
             else:
-                with st.spinner("Separating stems... (1-3 min)"):
+                with st.spinner(f"Separating stems... ({eta})"):
                     st.session_state.stems_paths = separate_stems(
-                        str(input_path), str(SEPARATED_DIR), MODEL
+                        str(input_path), str(SEPARATED_DIR), model
                     )
         except RuntimeError as exc:
             st.error(f"Separation failed: {exc}")
@@ -133,6 +215,14 @@ def main() -> None:
         final = Path(paths["final"])
         final.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(shifted, final)
+        # The copy is already made, so evicting now cannot take away a file the
+        # render path still has to read. Top-level CACHE_DIR, not the per-song
+        # cache_dir: the limit is a budget for the whole cache, not for one song.
+        # Walking on every rerun is deliberate — a few hundred stat calls.
+        freed = enforce_cache_limit(str(CACHE_DIR))
+
+    if freed > 0:
+        st.caption(f"Freed {freed / (1024 * 1024):.1f} MB from the pitch-shift cache.")
 
     st.success("Done! Karaoke track ready below.")
     st.audio(str(final))
