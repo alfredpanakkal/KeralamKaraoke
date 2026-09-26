@@ -62,4 +62,4 @@ def test_no_partial_file_left_behind_on_success(tmp_path):
     src = _write_wav(tmp_path / "in.wav")
     cache = str(tmp_path / "cache")
     karaoke.pitch_shift.pitch_shift_cached(str(src), 1, cache, shifter=lambda p, s: None)
-    assert list(Path(cache).glob("*.partial")) == []
+    assert list(Path(cache).glob("*.tmp.wav")) == []

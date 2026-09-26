@@ -42,7 +42,10 @@ def test_build_output_paths_isolates_different_songs():
 
 def test_build_demucs_argv_uses_correct_flags():
     argv = karaoke.core.build_demucs_argv("/path/input.mp3", "separated", "htdemucs")
-    assert argv[0] == "demucs"
+    # Invoked via the current interpreter, not a bare "demucs" on PATH --
+    # the bare command breaks when the venv isn't activated.
+    assert "python" in argv[0].lower()
+    assert argv[1] == "-m" and argv[2] == "demucs"
     assert "-n" in argv and "htdemucs" in argv
     assert "--two-stems=vocals" in argv
     assert "--filename" in argv and "{stem}.{ext}" in argv

@@ -44,8 +44,9 @@ def pitch_shift_cached(
         return str(cache_path)
 
     # Write to a temp name first so an interrupted shift cannot leave a
-    # truncated file that later reads as a valid cache hit.
-    tmp_path = cache_path.with_suffix(".partial")
+    # truncated file that later reads as a valid cache hit. Keep the .wav
+    # suffix so soundfile can infer the output format.
+    tmp_path = cache_path.with_name(cache_path.stem + ".tmp.wav")
     shutil.copy2(instrumental_path, tmp_path)
     (shifter or _shift_audio)(str(tmp_path), semitones)
     tmp_path.replace(cache_path)

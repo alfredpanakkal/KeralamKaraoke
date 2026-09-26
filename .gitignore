@@ -18,6 +18,10 @@ separated/
 karaoke_out/
 karaoke_cache/
 
+# Local test audio (too large / licensing for repo)
+tests/*.mp3
+tests/*.wav
+
 # Demucs model cache (can be large)
 .demucs/
 

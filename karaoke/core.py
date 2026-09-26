@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 from pathlib import Path
 
 # Characters that are illegal in Windows filenames. Stripped rather than
@@ -38,6 +39,10 @@ def build_output_paths(song_name: str, base_dirs: dict) -> dict:
 def build_demucs_argv(input_path: str, separated_dir: str, model: str) -> list[str]:
     """Build argv for the demucs CLI.
 
+    Invoked as ``sys.executable -m demucs`` rather than the bare ``demucs``
+    command: the latter only works when the virtualenv is on PATH, while
+    this works however app.py was launched.
+
     --device is deliberately omitted: demucs already auto-detects
     cuda -> mps -> cpu, and hardcoding "cuda" turns a working CPU
     fallback into a hard failure.
@@ -47,7 +52,8 @@ def build_demucs_argv(input_path: str, separated_dir: str, model: str) -> list[s
     per song; this flattens it so the output path is predictable.
     """
     return [
-        "demucs",
+        sys.executable,
+        "-m", "demucs",
         "-n", model,
         "--two-stems=vocals",
         "-o", separated_dir,
