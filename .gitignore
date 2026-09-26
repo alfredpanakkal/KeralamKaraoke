@@ -28,3 +28,5 @@ tests/*.wav
 # IDE
 .vscode/
 .idea/
+# Streamlit server logs
+streamlit*.log
