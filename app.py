@@ -33,8 +33,22 @@ SONG_KEYS = ("current_file", "song_name", "instrumental_path", "stems_paths", "p
 def reset_song_state(uploaded_name: str, mode: str) -> None:
     for key in SONG_KEYS:
         st.session_state.pop(key, None)
+    for key in [k for k in st.session_state if k.startswith("_dl_bytes:")]:
+        st.session_state.pop(key, None)
     st.session_state.current_file = uploaded_name
     st.session_state.mode = mode
+
+
+def _cached_bytes(path: Path) -> bytes:
+    """Read a file once per (path, mtime); Streamlit reruns often."""
+    key = f"_dl_bytes:{path}"
+    mtime = path.stat().st_mtime
+    cached = st.session_state.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    data = path.read_bytes()
+    st.session_state[key] = (mtime, data)
+    return data
 
 
 def main() -> None:
@@ -120,7 +134,7 @@ def main() -> None:
 
     st.download_button(
         label="Download Karaoke Track",
-        data=final.read_bytes(),
+        data=_cached_bytes(final),
         file_name=f"{song_name}_karaoke.wav",
         mime="audio/wav",
     )
@@ -140,7 +154,7 @@ def _render_stems() -> None:
         st.audio(str(path))
         st.download_button(
             label=f"Download {stem}",
-            data=path.read_bytes(),
+            data=_cached_bytes(path),
             file_name=f"{song_name}_{stem}.wav",
             mime="audio/wav",
             key=f"dl_{stem}",
