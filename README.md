@@ -39,6 +39,8 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 
 This installs torch 2.6.0+cu124, which is what the project is tested against.
 
+Separations are capped at 30 minutes (`demucs_runner.TIMEOUT_SECONDS`); exceeding it means torch is probably CPU-only — re-check the CUDA install above.
+
 ## Run
 
 ```bash
