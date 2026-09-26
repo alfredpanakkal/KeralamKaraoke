@@ -1,3 +1,4 @@
+from pathlib import Path
 import karaoke.core
 
 
@@ -86,3 +87,19 @@ def test_safe_upload_name_resolves_inside_target_dir(tmp_path):
 
 def test_safe_upload_name_keeps_normal_names_readable():
     assert karaoke.core.safe_upload_name("My Song.mp3") == "My_Song.mp3"
+
+
+def test_build_output_paths_respects_model_name():
+    paths = karaoke.core.build_output_paths(
+        "song", {"separated": "sep", "output": "out", "cache": "c"},
+        model="htdemucs_ft",
+    )
+    assert "htdemucs_ft" in paths["instrumental"]
+    assert paths["instrumental"] == str(Path("sep") / "htdemucs_ft" / "song_no_vocals.wav")
+
+
+def test_build_output_paths_defaults_to_htdemucs():
+    paths = karaoke.core.build_output_paths(
+        "song", {"separated": "sep", "output": "out", "cache": "c"},
+    )
+    assert "htdemucs" in paths["instrumental"]

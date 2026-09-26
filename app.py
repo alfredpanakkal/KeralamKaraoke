@@ -73,7 +73,7 @@ def main() -> None:
 
         song_name = Path(safe_name).stem
         st.session_state.song_name = song_name
-        st.session_state.paths = build_output_paths(song_name, BASE_DIRS)
+        st.session_state.paths = build_output_paths(song_name, BASE_DIRS, model=MODEL)
 
         try:
             if mode.startswith("Karaoke"):

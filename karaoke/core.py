@@ -33,14 +33,16 @@ def safe_upload_name(name: str) -> str:
     return cleaned or "upload"
 
 
-def build_output_paths(song_name: str, base_dirs: dict) -> dict:
+def build_output_paths(
+    song_name: str, base_dirs: dict, model: str = "htdemucs"
+) -> dict:
     """Return per-song output paths so concurrent songs never collide.
 
     base_dirs keys: "separated", "output", "cache".
     """
     return {
         "instrumental": str(
-            Path(base_dirs["separated"]) / "htdemucs" / f"{song_name}_no_vocals.wav"
+            Path(base_dirs["separated"]) / model / f"{song_name}_no_vocals.wav"
         ),
         "final": str(Path(base_dirs["output"]) / f"{song_name}_karaoke.wav"),
         "cache_dir": str(Path(base_dirs["cache"]) / song_name),
