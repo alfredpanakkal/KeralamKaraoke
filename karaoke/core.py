@@ -198,3 +198,38 @@ def clear_generated_files(dirs) -> tuple[int, list[str]]:
                 except OSError:
                     pass
     return deleted, failures
+
+
+CACHE_LIMIT_BYTES = 2 * 1024 ** 3
+
+
+def enforce_cache_limit(root: str, limit_bytes: int = CACHE_LIMIT_BYTES) -> int:
+    """Delete least-recently-modified files under `root` until the total is
+    within `limit_bytes`. Returns bytes freed. Never raises: an undeletable
+    file is skipped. Newest files are kept — sorting is by
+    (mtime, str(path)) so ties are deterministic."""
+    entries = []
+    for path in Path(root).rglob("*"):
+        if not path.is_file():
+            continue  # a per-song directory, or an entry that just vanished
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        entries.append((info.st_mtime, str(path), info.st_size))
+    entries.sort()
+
+    total = sum(size for _mtime, _path, size in entries)
+    freed = 0
+    for _mtime, name, size in entries:
+        if total <= limit_bytes:
+            break
+        try:
+            os.unlink(name)
+        except OSError:
+            # Locked or already gone. The bytes were not freed, so `total` is
+            # unchanged and the next-oldest file is tried instead.
+            continue
+        total -= size
+        freed += size
+    return freed

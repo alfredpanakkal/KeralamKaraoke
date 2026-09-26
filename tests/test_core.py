@@ -262,3 +262,124 @@ def test_clear_generated_files_reports_an_undeletable_file_instead_of_raising(tm
     assert failures[0].startswith(f"{locked}: ")  # "<path>: <reason>"
     assert locked.exists()
     locked.unlink()
+
+
+def test_cache_limit_bytes_is_two_gigabytes():
+    # A deliberate budget, so pin it: 2 GB is a few full-length songs, not an
+    # unbounded accumulation.
+    assert karaoke.core.CACHE_LIMIT_BYTES == 2 * 1024 ** 3
+
+
+def _write_cache_entry(root: Path, relative: str, payload: bytes, mtime: float) -> Path:
+    """Write one cache file and pin its mtime.
+
+    The mtime is set explicitly because eviction order is the whole contract:
+    without this, ordering would depend on filesystem timestamp resolution and
+    on how fast the test happens to run.
+    """
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_enforce_cache_limit_keeps_a_cache_at_or_under_the_limit(tmp_path):
+    root = tmp_path / "karaoke_cache"
+    first = _write_cache_entry(root, "Song_a/shift_0.wav", b"a" * 100, 1000.0)
+    second = _write_cache_entry(root, "Song_b/shift_-3.wav", b"b" * 100, 2000.0)
+
+    # 200 bytes on disk against a 200 limit: exactly at it is not over it, so
+    # there is nothing to free.
+    freed = karaoke.core.enforce_cache_limit(str(root), limit_bytes=200)
+
+    assert freed == 0
+    assert first.is_file() and second.is_file()
+
+
+def test_enforce_cache_limit_deletes_oldest_first_and_keeps_the_newest(tmp_path):
+    """Eviction order is the contract: the entry the render path is about to
+    read is the newest one, so a sweep that keeps the newest cannot take it.
+
+    Break it catches: sorting by size or by name instead of by mtime, keeping
+    the oldest rather than the newest, and stopping one file late.
+    """
+    root = tmp_path / "karaoke_cache"
+    oldest = _write_cache_entry(root, "Song_a/shift_-6.wav", b"o" * 400, 1000.0)
+    middle = _write_cache_entry(root, "Song_a/shift_+1.wav", b"m" * 300, 2000.0)
+    newest = _write_cache_entry(root, "Song_b/shift_+6.wav", b"n" * 200, 3000.0)
+
+    freed = karaoke.core.enforce_cache_limit(str(root), limit_bytes=700)
+
+    # 900 bytes on disk against a 700 limit: deleting the oldest leaves 500,
+    # which is within the limit, so exactly one file goes.
+    assert freed == 400
+    assert not oldest.exists()
+    assert middle.is_file()
+    assert newest.is_file()
+
+
+def test_enforce_cache_limit_sweeps_nested_per_song_subdirectories(tmp_path):
+    """The cache is a directory per song, so a top-level-only sweep would free
+    nothing at all.
+
+    Break it catches: globbing `root/*` instead of recursing.
+    """
+    root = tmp_path / "karaoke_cache"
+    nested = _write_cache_entry(root, "Song_a/shift_-6.wav", b"x" * 100, 1000.0)
+    top = _write_cache_entry(root, "loose.wav", b"y" * 100, 2000.0)
+
+    freed = karaoke.core.enforce_cache_limit(str(root), limit_bytes=100)
+
+    assert freed == 100
+    assert not nested.exists()  # the older file, one level down, went first
+    assert top.is_file()
+    # Only files are evicted, so the emptied per-song directory is still there
+    # for the next run to write into.
+    assert (root / "Song_a").is_dir()
+
+
+def test_enforce_cache_limit_of_zero_sweeps_the_whole_cache(tmp_path):
+    root = tmp_path / "karaoke_cache"
+    _write_cache_entry(root, "Song_a/shift_-6.wav", b"x" * 100, 1000.0)
+    _write_cache_entry(root, "Song_b/shift_+6.wav", b"y" * 100, 2000.0)
+
+    freed = karaoke.core.enforce_cache_limit(str(root), limit_bytes=0)
+
+    assert freed == 200
+    assert list(root.rglob("*.wav")) == []
+
+
+def test_enforce_cache_limit_on_a_cache_that_does_not_exist(tmp_path):
+    """Never raises: a cache the app has not filled yet is not an error.
+
+    Break it catches: creating the cache as a side effect of walking it, and
+    raising on the missing root instead of reporting nothing to do.
+    """
+    missing = tmp_path / "karaoke_cache"
+
+    assert karaoke.core.enforce_cache_limit(str(missing)) == 0
+    assert not missing.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="POSIX deletes read-only files")
+def test_enforce_cache_limit_skips_an_undeletable_file_and_keeps_sweeping(tmp_path):
+    """Reclaiming space must never break playback, so a file the OS refuses to
+    delete is skipped -- and only bytes actually freed are reported.
+
+    Break it catches: letting the OSError escape, counting a skipped file's
+    size as freed, and abandoning the sweep at the first failure.
+    """
+    root = tmp_path / "karaoke_cache"
+    locked = _write_cache_entry(root, "Song_a/shift_-6.wav", b"x" * 100, 1000.0)
+    os.chmod(locked, stat.S_IREAD)  # Windows refuses to unlink a read-only file
+    deletable = _write_cache_entry(root, "Song_b/shift_+6.wav", b"y" * 100, 2000.0)
+    try:
+        freed = karaoke.core.enforce_cache_limit(str(root), limit_bytes=0)
+    finally:
+        os.chmod(locked, stat.S_IWRITE)
+
+    assert freed == 100
+    assert locked.exists()  # skipped, so its 100 bytes were never freed
+    assert not deletable.exists()  # the sweep carried on past the failure
+    locked.unlink()

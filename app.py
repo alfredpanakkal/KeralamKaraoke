@@ -10,6 +10,7 @@ from karaoke.core import (
     STEMS,
     build_output_paths,
     clear_generated_files,
+    enforce_cache_limit,
     estimate_minutes,
     probe_audio,
     safe_upload_name,
@@ -214,6 +215,14 @@ def main() -> None:
         final = Path(paths["final"])
         final.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(shifted, final)
+        # The copy is already made, so evicting now cannot take away a file the
+        # render path still has to read. Top-level CACHE_DIR, not the per-song
+        # cache_dir: the limit is a budget for the whole cache, not for one song.
+        # Walking on every rerun is deliberate — a few hundred stat calls.
+        freed = enforce_cache_limit(str(CACHE_DIR))
+
+    if freed > 0:
+        st.caption(f"Freed {freed / (1024 * 1024):.1f} MB from the pitch-shift cache.")
 
     st.success("Done! Karaoke track ready below.")
     st.audio(str(final))

@@ -76,7 +76,7 @@ Each song gets its own cache and output names, so processing a second song never
 ## Notes
 
 - Demucs reuses one flat filename (`no_vocals.wav`) internally. This project copies the result to a per-song path after separation to avoid collisions.
-- Pitch-shift results are cached by content hash, so revisiting a slider value is instant and the cache survives restarts.
+- Pitch-shift results are cached by content hash, so revisiting a slider value is instant and the cache survives restarts. Once `karaoke_cache/` passes 2 GB, the least recently modified entries are deleted to make room.
 - The sidebar's **Clear generated files** button empties all four directories at once. That includes the copy the app made in `uploads/`, not your original file.
 - Separation quality varies by song. Dense mixes with heavy reverb or layered vocals separate less cleanly than vocal-forward tracks.
 - The figure under the uploader is an estimate, not a promise. It reads the audio header to get the length, then assumes 45 seconds of audio per minute of processing — a rough rate measured on an RTX 4050. CPU-only runs are several times slower, and `htdemucs_ft` runs four models, so treat it as a floor.
