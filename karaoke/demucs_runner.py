@@ -39,7 +39,7 @@ def separate_vocals(input_path: str, separated_dir: str, model: str) -> str:
     """
     song_name = Path(input_path).stem
     paths = build_output_paths(
-        song_name, {"separated": separated_dir, "output": "", "cache": ""}
+        song_name, {"separated": separated_dir, "output": "", "cache": ""}, model=model
     )
     returncode, _stdout, stderr = run_demucs(
         build_demucs_argv(input_path, separated_dir, model)

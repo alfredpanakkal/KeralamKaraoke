@@ -104,3 +104,15 @@ def test_run_demucs_wraps_timeout_in_runtimeerror():
     with patch.object(subprocess, "run", side_effect=timeout):
         with pytest.raises(RuntimeError, match="timed out"):
             karaoke.demucs_runner.run_demucs(["demucs"])
+
+
+def test_separate_vocals_respects_model_name(tmp_path):
+    produced = tmp_path / "separated" / "htdemucs_ft" / "no_vocals.wav"
+    produced.parent.mkdir(parents=True)
+    produced.write_bytes(b"ft-audio")
+
+    with patch.object(karaoke.demucs_runner, "run_demucs", return_value=(0, "", "")):
+        dest = karaoke.demucs_runner.separate_vocals(
+            str(tmp_path / "song.mp3"), str(tmp_path / "separated"), "htdemucs_ft"
+        )
+    assert "htdemucs_ft" in dest
