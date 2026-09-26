@@ -4,6 +4,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from stat import S_ISREG
 
 # Characters that are illegal in Windows filenames. Stripped rather than
 # replaced so "My Song" -> "My_Song" stays readable.
@@ -210,12 +211,15 @@ def enforce_cache_limit(root: str, limit_bytes: int = CACHE_LIMIT_BYTES) -> int:
     (mtime, str(path)) so ties are deterministic."""
     entries = []
     for path in Path(root).rglob("*"):
-        if not path.is_file():
-            continue  # a per-song directory, or an entry that just vanished
         try:
             info = path.stat()
         except OSError:
+            # Gone, or held open with deny-share semantics so even the metadata
+            # read is refused. Either way, skip this entry and keep sweeping:
+            # the walk is best effort, so one hostile entry cannot stop it.
             continue
+        if not S_ISREG(info.st_mode):
+            continue  # a per-song directory
         entries.append((info.st_mtime, str(path), info.st_size))
     entries.sort()
 

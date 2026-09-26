@@ -383,3 +383,35 @@ def test_enforce_cache_limit_skips_an_undeletable_file_and_keeps_sweeping(tmp_pa
     assert locked.exists()  # skipped, so its 100 bytes were never freed
     assert not deletable.exists()  # the sweep carried on past the failure
     locked.unlink()
+
+
+def test_enforce_cache_limit_skips_an_entry_whose_metadata_read_is_refused(
+    tmp_path, monkeypatch
+):
+    """Windows keeps a cache file's metadata out of reach while another player
+    or an Explorer preview holds it with deny-share semantics: the read raises
+    PermissionError, which Path.is_file() deliberately re-raises. The sweep must
+    skip that one entry and carry on, or the exception escapes the render path
+    and the user loses the player and download button for that run.
+
+    The refusal is injected because CPython's own open() always shares, so the
+    real sharing violation cannot be reproduced here without ctypes.
+    """
+    root = tmp_path / "karaoke_cache"
+    refused = _write_cache_entry(root, "Song_a/shift_-6.wav", b"x" * 100, 1000.0)
+    deletable = _write_cache_entry(root, "Song_b/shift_+6.wav", b"y" * 100, 2000.0)
+    real_stat = Path.stat
+
+    def refusing_stat(self, *args, **kwargs):
+        if self.name == refused.name:
+            raise PermissionError(13, "used by another process", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", refusing_stat)
+
+    freed = karaoke.core.enforce_cache_limit(str(root), limit_bytes=0)
+    monkeypatch.undo()  # the assertions need a Path.stat that answers
+
+    assert freed == 100
+    assert refused.exists()  # could not be measured, so not evicted
+    assert not deletable.exists()  # the sweep carried on past the refusal
