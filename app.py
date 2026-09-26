@@ -1,9 +1,11 @@
 """Streamlit UI for the Karaoke Track Generator."""
 
+import base64
 import shutil
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from karaoke.core import (
     MODEL_OPTIONS,
@@ -126,13 +128,17 @@ def main() -> None:
         ),
     )
     model = MODEL_OPTIONS[model_label]
-    semitones = st.slider(
-        "Pitch shift (semitones)",
-        min_value=-6,
-        max_value=6,
-        value=0,
-        help="0 = no change. Karaoke mode only. Positive = higher, negative = lower.",
-    )
+
+    if mode == MODE_KARAOKE:
+        semitones = st.slider(
+            "Pitch shift (semitones)",
+            min_value=-6,
+            max_value=6,
+            value=0,
+            help="0 = no change. Karaoke mode only. Positive = higher, negative = lower.",
+        )
+    else:
+        semitones = 0   # unused in stems mode, keep defined so later refs don't break
 
     if uploaded is None:
         st.info("Upload a song to begin.")
@@ -235,6 +241,326 @@ def main() -> None:
     )
 
 
+def _render_mixer(stems_paths: dict[str, str], song_name: str) -> None:
+    """Render a live Web Audio API mixer for the 4 stems."""
+    # Encode each stem as base64 for embedding in the HTML
+    stem_data = {}
+    for stem in STEMS:
+        path = Path(stems_paths[stem])
+        b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        stem_data[stem] = f"data:audio/wav;base64,{b64}"
+
+    # Unique component key to avoid collisions on reruns
+    key = f"mixer_{song_name}"
+
+    html = f"""
+    <div id="{key}" style="font-family: system-ui, sans-serif;">
+      <style>
+        .mixer-container {{ display: flex; flex-direction: column; gap: 12px; max-width: 600px; }}
+        .mixer-header {{ display: flex; justify-content: space-between; align-items: center; }}
+        .mixer-title {{ font-weight: 600; font-size: 1.1rem; }}
+        .stem-row {{ display: flex; align-items: center; gap: 12px; }}
+        .stem-label {{ width: 80px; font-weight: 500; text-transform: capitalize; }}
+        .stem-slider {{ flex: 1; }}
+        .stem-value {{ width: 45px; text-align: right; font-variant-numeric: tabular-nums; }}
+        .transport {{ display: flex; gap: 8px; align-items: center; padding-top: 8px; border-top: 1px solid #e0e0e0; }}
+        .transport-btn {{ padding: 6px 16px; border: none; border-radius: 4px; background: #0066cc; color: white; cursor: pointer; font-size: 0.9rem; }}
+        .transport-btn:disabled {{ background: #ccc; cursor: not-allowed; }}
+        .transport-btn.secondary {{ background: #666; }}
+        .download-btn {{ padding: 6px 16px; border: none; border-radius: 4px; background: #28a745; color: white; cursor: pointer; font-size: 0.9rem; }}
+        .download-btn:disabled {{ background: #ccc; cursor: not-allowed; }}
+        .status {{ font-size: 0.85rem; color: #666; min-height: 1.2em; }}
+        .master-row {{ display: flex; align-items: center; gap: 12px; padding-top: 8px; border-top: 1px solid #e0e0e0; }}
+        .master-label {{ width: 80px; font-weight: 500; }}
+      </style>
+
+      <div class="mixer-container">
+        <div class="mixer-header">
+          <span class="mixer-title">Live Stem Mixer</span>
+          <span class="status" id="{key}_status">Loading audio…</span>
+        </div>
+
+        <div class="master-row">
+          <span class="master-label">Master</span>
+          <input type="range" class="stem-slider" id="{key}_master" min="0" max="150" value="100" step="1">
+          <span class="stem-value" id="{key}_master_val">100%</span>
+        </div>
+
+        <div id="{key}_stems"></div>
+
+        <div class="transport">
+          <button class="transport-btn" id="{key}_play" disabled>▶ Play</button>
+          <button class="transport-btn" id="{key}_pause" disabled>⏸ Pause</button>
+          <button class="transport-btn secondary" id="{key}_stop" disabled>⏹ Stop</button>
+          <button class="download-btn" id="{key}_download" disabled>Download Mix</button>
+        </div>
+      </div>
+
+      <script>
+        (function() {{
+          const KEY = "{key}";
+          const STEMS = {list(STEMS)};
+          const STEM_DATA = {stem_data};
+
+          // Audio context and nodes
+          let audioCtx = null;
+          let buffers = {{}};
+          let sources = {{}};
+          let gainNodes = {{}};
+          let masterGain = null;
+          let startTime = 0;
+          let pauseTime = 0;
+          let isPlaying = false;
+          let loadedCount = 0;
+
+          const statusEl = document.getElementById(KEY + "_status");
+          const playBtn = document.getElementById(KEY + "_play");
+          const pauseBtn = document.getElementById(KEY + "_pause");
+          const stopBtn = document.getElementById(KEY + "_stop");
+          const downloadBtn = document.getElementById(KEY + "_download");
+          const masterSlider = document.getElementById(KEY + "_master");
+          const masterVal = document.getElementById(KEY + "_master_val");
+          const stemsContainer = document.getElementById(KEY + "_stems");
+
+          // Create stem rows
+          STEMS.forEach(stem => {{
+            const row = document.createElement("div");
+            row.className = "stem-row";
+            row.innerHTML = `
+              <span class="stem-label">${{stem}}</span>
+              <input type="range" class="stem-slider" id="${{KEY}}_${{stem}}" min="0" max="150" value="100" step="1" disabled>
+              <span class="stem-value" id="${{KEY}}_${{stem}}_val">100%</span>
+            `;
+            stemsContainer.appendChild(row);
+          }});
+
+          const stemSliders = {{}};
+          const stemVals = {{}};
+          STEMS.forEach(stem => {{
+            stemSliders[stem] = document.getElementById(KEY + "_" + stem);
+            stemVals[stem] = document.getElementById(KEY + "_" + stem + "_val");
+          }});
+
+          function updateStatus(msg) {{
+            statusEl.textContent = msg;
+          }}
+
+          function enableUI(enable) {{
+            playBtn.disabled = !enable || isPlaying;
+            pauseBtn.disabled = !enable || !isPlaying;
+            stopBtn.disabled = !enable || !isPlaying;
+            downloadBtn.disabled = !enable;
+            masterSlider.disabled = !enable;
+            STEMS.forEach(stem => stemSliders[stem].disabled = !enable);
+          }}
+
+          function formatTime(seconds) {{
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${{m}}:${{s.toString().padStart(2, '0')}}`;
+          }}
+
+          async function loadAudio() {{
+            try {{
+              audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+              masterGain = audioCtx.createGain();
+              masterGain.connect(audioCtx.destination);
+              masterGain.gain.value = masterSlider.value / 100;
+
+              // Load all stems in parallel
+              await Promise.all(STEMS.map(async stem => {{
+                const response = await fetch(STEM_DATA[stem]);
+                const arrayBuffer = await response.arrayBuffer();
+                buffers[stem] = await audioCtx.decodeAudioData(arrayBuffer);
+                loadedCount++;
+                updateStatus(`Loaded ${{loadedCount}}/${{STEMS.length}} stems…`);
+              }}));
+
+              updateStatus(`Ready — ${{formatTime(buffers[STEMS[0]].duration)}}`);
+              enableUI(true);
+            }} catch (err) {{
+              updateStatus("Error loading audio: " + err.message);
+              console.error(err);
+            }}
+          }}
+
+          function createSource(stem) {{
+            const src = audioCtx.createBufferSource();
+            src.buffer = buffers[stem];
+            const gain = audioCtx.createGain();
+            gain.gain.value = stemSliders[stem].value / 100;
+            src.connect(gain);
+            gain.connect(masterGain);
+            sources[stem] = src;
+            gainNodes[stem] = gain;
+            return src;
+          }}
+
+          function startAll(offset = 0) {{
+            if (isPlaying) return;
+            STEMS.forEach(stem => {{
+              const src = createSource(stem);
+              src.start(0, offset);
+            }});
+            startTime = audioCtx.currentTime - offset;
+            isPlaying = true;
+            playBtn.disabled = true;
+            pauseBtn.disabled = false;
+            stopBtn.disabled = false;
+            updateStatus("Playing…");
+          }}
+
+          function pauseAll() {{
+            if (!isPlaying) return;
+            pauseTime = audioCtx.currentTime - startTime;
+            STEMS.forEach(stem => {{
+              if (sources[stem]) sources[stem].stop(0);
+            }});
+            isPlaying = false;
+            playBtn.disabled = false;
+            pauseBtn.disabled = true;
+            updateStatus(`Paused at ${{formatTime(pauseTime)}}`);
+          }}
+
+          function stopAll() {{
+            STEMS.forEach(stem => {{
+              if (sources[stem]) sources[stem].stop(0);
+            }});
+            isPlaying = false;
+            pauseTime = 0;
+            startTime = 0;
+            playBtn.disabled = false;
+            pauseBtn.disabled = true;
+            stopBtn.disabled = true;
+            updateStatus(`Ready — ${{formatTime(buffers[STEMS[0]]?.duration || 0)}}`);
+          }}
+
+          function updateGains() {{
+            if (masterGain) masterGain.gain.value = masterSlider.value / 100;
+            masterVal.textContent = masterSlider.value + "%";
+            STEMS.forEach(stem => {{
+              if (gainNodes[stem]) gainNodes[stem].gain.value = stemSliders[stem].value / 100;
+              stemVals[stem].textContent = stemSliders[stem].value + "%";
+            }});
+          }}
+
+          // Download mix using OfflineAudioContext
+          async function downloadMix() {{
+            downloadBtn.disabled = true;
+            downloadBtn.textContent = "Rendering…";
+            updateStatus("Rendering mix…");
+
+            try {{
+              const duration = buffers[STEMS[0]].duration;
+              const offlineCtx = new OfflineAudioContext(2, duration * offlineCtx.sampleRate, offlineCtx.sampleRate);
+              const offlineMaster = offlineCtx.createGain();
+              offlineMaster.connect(offlineCtx.destination);
+              offlineMaster.gain.value = masterSlider.value / 100;
+
+              await Promise.all(STEMS.map(async stem => {{
+                const src = offlineCtx.createBufferSource();
+                src.buffer = buffers[stem];
+                const gain = offlineCtx.createGain();
+                gain.gain.value = stemSliders[stem].value / 100;
+                src.connect(gain);
+                gain.connect(offlineMaster);
+                src.start(0);
+              }}));
+
+              const renderedBuffer = await offlineCtx.startRendering();
+
+              // Convert to WAV
+              const wav = bufferToWav(renderedBuffer);
+              const blob = new Blob([wav], {{ type: "audio/wav" }});
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "{song_name}_mix.wav";
+              a.click();
+              URL.revokeObjectURL(url);
+
+              updateStatus("Mix downloaded");
+            }} catch (err) {{
+              updateStatus("Download failed: " + err.message);
+              console.error(err);
+            }} finally {{
+              downloadBtn.disabled = false;
+              downloadBtn.textContent = "Download Mix";
+            }}
+          }}
+
+          // WAV encoding helper
+          function bufferToWav(buffer) {{
+            const numChannels = buffer.numberOfChannels;
+            const sampleRate = buffer.sampleRate;
+            const length = buffer.length * numChannels * 2; // 16-bit
+            const arrayBuffer = new ArrayBuffer(44 + length);
+            const view = new DataView(arrayBuffer);
+
+            // RIFF header
+            writeString(view, 0, "RIFF");
+            view.setUint32(4, 36 + length, true);
+            writeString(view, 8, "WAVE");
+            writeString(view, 12, "fmt ");
+            view.setUint32(16, 16, true); // PCM chunk size
+            view.setUint16(20, 1, true); // PCM format
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numChannels * 2, true); // byte rate
+            view.setUint16(32, numChannels * 2, true); // block align
+            view.setUint16(34, 16, true); // bits per sample
+            writeString(view, 36, "data");
+            view.setUint32(40, length, true);
+
+            // Interleave channels
+            const offset = 44;
+            const channelData = [];
+            for (let c = 0; c < numChannels; c++) {{
+              channelData.push(buffer.getChannelData(c));
+            }}
+            let pos = offset;
+            for (let i = 0; i < buffer.length; i++) {{
+              for (let c = 0; c < numChannels; c++) {{
+                const sample = Math.max(-1, Math.min(1, channelData[c][i]));
+                view.setInt16(pos, sample * 0x7FFF, true);
+                pos += 2;
+              }}
+            }}
+            return arrayBuffer;
+          }}
+
+          function writeString(view, offset, str) {{
+            for (let i = 0; i < str.length; i++) {{
+              view.setUint8(offset + i, str.charCodeAt(i));
+            }}
+          }}
+
+          // Event listeners
+          masterSlider.addEventListener("input", updateGains);
+          STEMS.forEach(stem => stemSliders[stem].addEventListener("input", updateGains));
+
+          playBtn.addEventListener("click", () => startAll(pauseTime));
+          pauseBtn.addEventListener("click", pauseAll);
+          stopBtn.addEventListener("click", stopAll);
+          downloadBtn.addEventListener("click", downloadMix);
+
+          // Handle audio context suspension (browser autoplay policy)
+          document.addEventListener("click", () => {{
+            if (audioCtx && audioCtx.state === "suspended") {{
+              audioCtx.resume();
+            }}
+          }}, {{ once: true }});
+
+          // Start loading
+          loadAudio();
+        }})();
+      </script>
+    </div>
+    """
+
+    components.html(html, height=520, scrolling=False)
+
+
 def _render_stems() -> None:
     stems_paths = st.session_state.get("stems_paths")
     if not stems_paths:
@@ -243,6 +569,9 @@ def _render_stems() -> None:
 
     song_name = st.session_state.song_name
     st.success("Done! Stems ready below.")
+
+    _render_mixer(stems_paths, song_name)
+
     for stem in STEMS:
         path = Path(stems_paths[stem])
         st.subheader(stem.capitalize())
