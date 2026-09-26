@@ -1,3 +1,7 @@
+# Default torch from PyPI is CPU-only on Windows. For NVIDIA GPUs, after
+# installing these requirements, run:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+
 streamlit>=1.38
 demucs>=4.0
 librosa>=0.10

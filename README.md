@@ -22,6 +22,23 @@ source karaoke-env/bin/activate
 pip install -r requirements.txt
 ```
 
+### GPU acceleration (NVIDIA, Windows)
+
+`pip install -r requirements.txt` gives you a **CPU-only torch** — it works,
+but separation takes 10-30 min per song instead of ~17 s. For CUDA:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+```
+
+Verify it took effect (should print `True` and your GPU name):
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+This installs torch 2.6.0+cu124, which is what the project is tested against.
+
 ## Run
 
 ```bash
