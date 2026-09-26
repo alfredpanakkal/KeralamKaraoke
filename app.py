@@ -5,7 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from karaoke.core import STEMS, build_output_paths, sanitise_name
+from karaoke.core import STEMS, build_output_paths, safe_upload_name
 from karaoke.demucs_runner import separate_stems, separate_vocals
 from karaoke.pitch_shift import pitch_shift_cached
 
@@ -67,10 +67,11 @@ def main() -> None:
         reset_song_state(uploaded.name, mode)
 
     if st.button("Generate", type="primary"):
-        input_path = UPLOAD_DIR / uploaded.name
+        safe_name = safe_upload_name(uploaded.name)
+        input_path = UPLOAD_DIR / safe_name
         input_path.write_bytes(uploaded.getbuffer())
 
-        song_name = Path(sanitise_name(uploaded.name)).stem
+        song_name = Path(safe_name).stem
         st.session_state.song_name = song_name
         st.session_state.paths = build_output_paths(song_name, BASE_DIRS)
 

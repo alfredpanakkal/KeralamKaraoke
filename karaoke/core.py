@@ -22,6 +22,17 @@ def sanitise_name(name: str) -> str:
     return _FORBIDDEN_CHARS.sub("", root).replace(" ", "_") + ext
 
 
+def safe_upload_name(name: str) -> str:
+    """A filename guaranteed to resolve to a direct child of its target dir.
+
+    sanitise_name already strips path separators; this additionally
+    removes leading dots so names like ".." or "../../x" cannot walk up
+    the directory tree, and guarantees a non-empty result.
+    """
+    cleaned = sanitise_name(name).lstrip(".")
+    return cleaned or "upload"
+
+
 def build_output_paths(song_name: str, base_dirs: dict) -> dict:
     """Return per-song output paths so concurrent songs never collide.
 

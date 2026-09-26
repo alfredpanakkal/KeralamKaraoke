@@ -67,3 +67,22 @@ def test_build_stems_argv_has_no_two_stems_and_per_song_names():
     assert "-o" in argv and "separated" in argv
     assert "/path/input.mp3" in argv
     assert "--device" not in argv
+
+
+def test_safe_upload_name_blocks_traversal():
+    for evil in ["../../evil.mp3", "..\\..\\evil.mp3", "/etc/passwd",
+                 "..", "....mp3", "", "normal song.mp3"]:
+        safe = karaoke.core.safe_upload_name(evil)
+        assert safe, "must never be empty"
+        assert "/" not in safe and "\\" not in safe
+        assert not safe.startswith(".")
+
+
+def test_safe_upload_name_resolves_inside_target_dir(tmp_path):
+    for evil in ["../../evil.mp3", "..\\x.mp3", "a/b.mp3"]:
+        resolved = (tmp_path / karaoke.core.safe_upload_name(evil)).resolve()
+        assert resolved.parent == tmp_path.resolve()
+
+
+def test_safe_upload_name_keeps_normal_names_readable():
+    assert karaoke.core.safe_upload_name("My Song.mp3") == "My_Song.mp3"
