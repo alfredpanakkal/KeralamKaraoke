@@ -9,10 +9,11 @@ from karaoke.core import STEMS, build_output_paths, safe_upload_name, validate_u
 from karaoke.demucs_runner import separate_stems, separate_vocals
 from karaoke.pitch_shift import pitch_shift_cached
 
-UPLOAD_DIR = Path("uploads")
-OUTPUT_DIR = Path("karaoke_out")
-SEPARATED_DIR = Path("separated")
-CACHE_DIR = Path("karaoke_cache")
+ROOT = Path(__file__).resolve().parent
+UPLOAD_DIR = ROOT / "uploads"
+OUTPUT_DIR = ROOT / "karaoke_out"
+SEPARATED_DIR = ROOT / "separated"
+CACHE_DIR = ROOT / "karaoke_cache"
 MODEL = "htdemucs"
 
 MODE_KARAOKE = "Karaoke (remove vocals)"

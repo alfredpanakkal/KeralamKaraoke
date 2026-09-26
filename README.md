@@ -60,6 +60,8 @@ Two modes, selected in the UI:
 
 ## Output layout
 
+Every path below sits next to `app.py`, whichever directory you launch the app from.
+
 | Path | Contents |
 |---|---|
 | `karaoke_out/<song>_karaoke.wav` | Final karaoke download, matches the current slider value |

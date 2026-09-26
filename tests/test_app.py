@@ -79,3 +79,14 @@ def test_mode_constants_are_distinct():
     import app
 
     assert app.MODE_KARAOKE != app.MODE_STEMS
+
+
+def test_runtime_dirs_are_anchored_to_app_dir():
+    """Runtime dirs must not depend on the process working directory."""
+    import app
+
+    app_root = Path(app.__file__).resolve().parent
+    for directory in (app.UPLOAD_DIR, app.OUTPUT_DIR, app.SEPARATED_DIR, app.CACHE_DIR):
+        assert directory.is_absolute()
+        assert directory.parent == app_root
+        assert directory.name in {"uploads", "karaoke_out", "separated", "karaoke_cache"}
