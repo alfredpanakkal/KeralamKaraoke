@@ -103,3 +103,18 @@ def test_build_output_paths_defaults_to_htdemucs():
         "song", {"separated": "sep", "output": "out", "cache": "c"},
     )
     assert "htdemucs" in paths["instrumental"]
+
+
+def test_safe_upload_name_handles_windows_reserved_names():
+    assert karaoke.core.safe_upload_name("CON.mp3") == "_CON.mp3"
+    assert karaoke.core.safe_upload_name("nul.wav") == "_nul.wav"
+    assert karaoke.core.safe_upload_name("com1.mp3") == "_com1.mp3"
+    # non-reserved passes through untouched
+    assert karaoke.core.safe_upload_name("constant.mp3") == "constant.mp3"
+
+
+def test_safe_upload_name_strips_trailing_dots_and_caps_length():
+    a = karaoke.core.safe_upload_name("song.mp3.")
+    assert a == "song.mp3"
+    long_name = "x" * 300 + ".mp3"
+    assert len(karaoke.core.safe_upload_name(long_name)) <= 104  # 100-stem cap + ext

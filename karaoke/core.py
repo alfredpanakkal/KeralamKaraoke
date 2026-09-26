@@ -9,6 +9,13 @@ from pathlib import Path
 # replaced so "My Song" -> "My_Song" stays readable.
 _FORBIDDEN_CHARS = re.compile(r'[\\/\*?:"<>|]')
 
+# Windows reserved device names (case-insensitive)
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def sanitise_name(name: str) -> str:
     """Strip filesystem-forbidden chars and spaces, keeping the extension.
@@ -23,14 +30,21 @@ def sanitise_name(name: str) -> str:
 
 
 def safe_upload_name(name: str) -> str:
-    """A filename guaranteed to resolve to a direct child of its target dir.
+    """A filename guaranteed safe as a direct child of its target dir.
 
-    sanitise_name already strips path separators; this additionally
-    removes leading dots so names like ".." or "../../x" cannot walk up
-    the directory tree, and guarantees a non-empty result.
+    On top of sanitise_name: strips leading dots (traversal), trailing
+    dots/spaces (Windows silently strips them, causing collisions),
+    prefixes reserved device names (CON, NUL, COM1...) which Windows
+    refuses to create, and caps the stem at 100 chars.
     """
     cleaned = sanitise_name(name).lstrip(".")
-    return cleaned or "upload"
+    root, ext = os.path.splitext(cleaned)
+    root = root.rstrip(". ")[:100]
+    ext = ext.rstrip(". ")
+    if root.upper() in _WINDOWS_RESERVED:
+        root = f"_{root}"
+    cleaned = root + ext
+    return cleaned.lstrip(".") or "upload"
 
 
 def build_output_paths(
