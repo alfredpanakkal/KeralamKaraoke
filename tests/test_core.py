@@ -1,6 +1,10 @@
 from pathlib import Path
 import io
+import os
+import stat
+import sys
 
+import pytest
 import soundfile as sf
 
 import karaoke.core
@@ -168,3 +172,54 @@ def test_probe_audio_returns_exactly_the_four_expected_keys(tmp_path):
     sf.write(path, [0.0] * 800, 8000)
     facts = karaoke.core.probe_audio(path)
     assert set(facts) == {"duration", "samplerate", "channels", "format"}
+
+
+def test_clear_generated_files_empties_the_roots_and_keeps_them(tmp_path):
+    uploads = tmp_path / "uploads"
+    cache = tmp_path / "karaoke_cache"
+    uploads.mkdir()
+    (uploads / "My_Song.mp3").write_bytes(b"upload")
+    (uploads / "notes.txt").write_bytes(b"scratch")
+    # per-song cache dir, the shape separated/ and karaoke_cache/ actually take
+    (cache / "My_Song").mkdir(parents=True)
+    (cache / "My_Song" / "shift_0.wav").write_bytes(b"cached")
+
+    deleted, failures = karaoke.core.clear_generated_files([uploads, cache])
+
+    assert (deleted, failures) == (3, [])
+    # The roots survive: the app reuses them on the next run.
+    assert uploads.is_dir() and cache.is_dir()
+    assert list(uploads.iterdir()) == []
+    assert list(cache.iterdir()) == []  # the emptied subdirectory is pruned
+
+
+def test_clear_generated_files_skips_a_root_that_does_not_exist(tmp_path):
+    present = tmp_path / "karaoke_out"
+    present.mkdir()
+    (present / "My_Song_karaoke.wav").write_bytes(b"out")
+    missing = tmp_path / "never_created"
+
+    deleted, failures = karaoke.core.clear_generated_files([missing, present])
+
+    assert (deleted, failures) == (1, [])
+    assert present.is_dir() and list(present.iterdir()) == []
+    assert not missing.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="POSIX deletes read-only files")
+def test_clear_generated_files_reports_an_undeletable_file_instead_of_raising(tmp_path):
+    root = tmp_path / "karaoke_cache"
+    root.mkdir()
+    locked = root / "locked.wav"
+    locked.write_bytes(b"x")
+    os.chmod(locked, stat.S_IREAD)  # Windows refuses to unlink a read-only file
+    try:
+        deleted, failures = karaoke.core.clear_generated_files([root])
+    finally:
+        os.chmod(locked, stat.S_IWRITE)
+
+    assert deleted == 0  # the file is still there, so it was not deleted
+    assert len(failures) == 1
+    assert failures[0].startswith(f"{locked}: ")  # "<path>: <reason>"
+    assert locked.exists()
+    locked.unlink()

@@ -140,3 +140,38 @@ def probe_audio(source) -> dict | None:
         "channels": int(info.channels),
         "format": str(info.format),
     }
+
+
+def clear_generated_files(dirs) -> tuple[int, list[str]]:
+    """Delete the contents of each directory in `dirs`, keeping the
+    directories themselves.
+
+    Recurses into subdirectories (e.g. separated/htdemucs/<song>/) and prunes
+    the subdirectories it empties. Returns (files_deleted, failures) where
+    each failure is a "<path>: <reason>" string. Never raises: a locked or
+    undeletable file is reported, not propagated.
+    """
+    deleted = 0
+    failures: list[str] = []
+    for directory in dirs:
+        root = Path(directory)
+        if not root.is_dir():
+            continue  # a directory the app has not created yet
+        # Bottom-up: a subdirectory is emptied and pruned before its parent is
+        # visited, so the only rmdir that can fail is one holding a locked
+        # file, and that file is already in `failures`.
+        for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
+            for name in filenames:
+                path = Path(dirpath) / name
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    failures.append(f"{path}: {exc.strerror or exc}")
+                else:
+                    deleted += 1
+            if Path(dirpath) != root:
+                try:
+                    os.rmdir(dirpath)
+                except OSError:
+                    pass
+    return deleted, failures

@@ -75,6 +75,28 @@ def test_reset_song_state_clears_dl_bytes_keeps_other(monkeypatch):
     assert state["mode"] == app.MODE_KARAOKE
 
 
+def test_purge_song_state_clears_song_and_dl_bytes(monkeypatch):
+    import app
+
+    state = FakeSessionState({
+        "_dl_bytes:x": (1, b""),
+        "song_name": "old_song",
+        "unrelated": 1,
+    })
+    monkeypatch.setattr(app.st, "session_state", state)
+
+    app.purge_song_state()
+
+    assert "_dl_bytes:x" not in state
+    assert "song_name" not in state
+    assert state["unrelated"] == 1
+
+    # reset_song_state purges through the same path, then re-seeds the song.
+    app.reset_song_state("song.mp3", app.MODE_KARAOKE)
+    assert state["current_file"] == "song.mp3"
+    assert state["mode"] == app.MODE_KARAOKE
+
+
 def test_mode_constants_are_distinct():
     import app
 

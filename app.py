@@ -5,7 +5,13 @@ from pathlib import Path
 
 import streamlit as st
 
-from karaoke.core import STEMS, build_output_paths, safe_upload_name, validate_upload_size
+from karaoke.core import (
+    STEMS,
+    build_output_paths,
+    clear_generated_files,
+    safe_upload_name,
+    validate_upload_size,
+)
 from karaoke.demucs_runner import separate_stems, separate_vocals
 from karaoke.pitch_shift import pitch_shift_cached
 
@@ -31,11 +37,20 @@ BASE_DIRS = {
 SONG_KEYS = ("current_file", "song_name", "instrumental_path", "stems_paths", "paths")
 
 
-def reset_song_state(uploaded_name: str, mode: str) -> None:
+def purge_song_state() -> None:
+    """Forget the current song and its cached download bytes.
+
+    The files those keys point at may be deleted in the same breath, so
+    nothing that reads them can be left behind in the session.
+    """
     for key in SONG_KEYS:
         st.session_state.pop(key, None)
     for key in [k for k in st.session_state if k.startswith("_dl_bytes:")]:
         st.session_state.pop(key, None)
+
+
+def reset_song_state(uploaded_name: str, mode: str) -> None:
+    purge_song_state()
     st.session_state.current_file = uploaded_name
     st.session_state.mode = mode
 
@@ -59,6 +74,28 @@ def main() -> None:
 
     for folder in (UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR):
         folder.mkdir(parents=True, exist_ok=True)
+
+    # Created above the uploader so a click is handled before the results
+    # below re-read a path this run has just deleted.
+    st.sidebar.caption(
+        "Deletes everything in uploads, karaoke_out, separated, and "
+        "karaoke_cache, including the copy the app made of your upload. "
+        "Your original file is not touched."
+    )
+    if st.sidebar.button("Clear generated files"):
+        deleted, failures = clear_generated_files(
+            [UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR]
+        )
+        # Purge before reporting: nothing below may read a deleted path.
+        purge_song_state()
+        if failures:
+            more = f", and {len(failures) - 3} more" if len(failures) > 3 else ""
+            st.sidebar.warning(
+                f"Deleted {deleted} file(s), but {len(failures)} could not be "
+                f"deleted: {'; '.join(failures[:3])}{more}"
+            )
+        else:
+            st.sidebar.success(f"Deleted {deleted} file(s)")
 
     uploaded = st.file_uploader("Choose a song file", type=["mp3", "wav"])
     mode = st.radio(
