@@ -15,6 +15,9 @@ SEPARATED_DIR = Path("separated")
 CACHE_DIR = Path("karaoke_cache")
 MODEL = "htdemucs"
 
+MODE_KARAOKE = "Karaoke (remove vocals)"
+MODE_STEMS = "Stems (vocals, drums, bass, other)"
+
 BASE_DIRS = {
     "separated": str(SEPARATED_DIR),
     "output": str(OUTPUT_DIR),
@@ -45,7 +48,7 @@ def main() -> None:
     uploaded = st.file_uploader("Choose a song file", type=["mp3", "wav"])
     mode = st.radio(
         "Separation mode",
-        options=["Karaoke (remove vocals)", "Stems (vocals, drums, bass, other)"],
+        options=[MODE_KARAOKE, MODE_STEMS],
         horizontal=True,
     )
     semitones = st.slider(
@@ -76,7 +79,7 @@ def main() -> None:
         st.session_state.paths = build_output_paths(song_name, BASE_DIRS, model=MODEL)
 
         try:
-            if mode.startswith("Karaoke"):
+            if mode == MODE_KARAOKE:
                 with st.spinner("Separating vocals from instrumental... (1-3 min)"):
                     st.session_state.instrumental_path = separate_vocals(
                         str(input_path), str(SEPARATED_DIR), MODEL
@@ -93,7 +96,7 @@ def main() -> None:
             st.error(f"Unexpected error: {exc}")
             st.stop()
 
-    if st.session_state.get("mode", "").startswith("Stems"):
+    if st.session_state.get("mode") == MODE_STEMS:
         _render_stems()
         return
 
