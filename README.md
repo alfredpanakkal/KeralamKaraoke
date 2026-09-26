@@ -7,7 +7,7 @@ Upload an `.mp3` or `.wav`, get back `.wav` files you can preview in the browser
 ## Requirements
 
 - Python 3.11+
-- An NVIDIA GPU makes this practical. Separation runs at roughly 45 seconds of processing per minute of audio, a rate measured on an RTX 4050, and CPU-only runs are several times slower. Demucs auto-detects CUDA / Apple MPS / CPU, so it runs without a GPU — just slowly.
+- An NVIDIA GPU makes this practical. Separation runs at roughly 45 seconds of audio per minute of processing, a rate measured on an RTX 4050, and CPU-only runs are several times slower. Demucs auto-detects CUDA / Apple MPS / CPU, so it runs without a GPU — just slowly.
 
 ## Setup
 
@@ -25,7 +25,8 @@ pip install -r requirements.txt
 ### GPU acceleration (NVIDIA, Windows)
 
 `pip install -r requirements.txt` gives you a **CPU-only torch** — it works,
-but separation takes 10-30 min per song instead of ~17 s. For CUDA:
+but separation is several times slower than the roughly 45 seconds of audio per
+minute of processing measured on an RTX 4050. For CUDA:
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu124
