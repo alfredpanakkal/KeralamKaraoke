@@ -1,4 +1,8 @@
 from pathlib import Path
+import io
+
+import soundfile as sf
+
 import karaoke.core
 
 
@@ -126,3 +130,41 @@ def test_upload_too_large_is_rejected():
     assert not ok and "150" in msg
     ok, _ = karaoke.core.validate_upload_size(limit)
     assert ok
+
+
+def test_probe_audio_reports_header_of_a_real_wav(tmp_path):
+    path = tmp_path / "song.wav"
+    sf.write(path, [0.0] * 800, 8000)
+    facts = karaoke.core.probe_audio(path)
+    assert abs(facts["duration"] - 0.1) < 1e-6
+    assert facts["samplerate"] == 8000
+    assert facts["channels"] == 1
+    assert facts["format"] == "WAV"
+
+
+def test_probe_audio_accepts_an_open_file_object(tmp_path):
+    # Streamlit's UploadedFile is an io.BytesIO subclass, so the UI probes the
+    # upload without copying it to disk first.
+    path = tmp_path / "song.wav"
+    sf.write(path, [0.0] * 800, 8000)
+    facts = karaoke.core.probe_audio(io.BytesIO(path.read_bytes()))
+    assert abs(facts["duration"] - 0.1) < 1e-6
+    assert facts["samplerate"] == 8000
+    assert facts["channels"] == 1
+
+
+def test_probe_audio_returns_none_for_a_non_audio_file(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_bytes(b"not audio at all")
+    assert karaoke.core.probe_audio(path) is None
+
+
+def test_probe_audio_returns_none_for_a_missing_file(tmp_path):
+    assert karaoke.core.probe_audio(tmp_path / "nope.wav") is None
+
+
+def test_probe_audio_returns_exactly_the_four_expected_keys(tmp_path):
+    path = tmp_path / "song.wav"
+    sf.write(path, [0.0] * 800, 8000)
+    facts = karaoke.core.probe_audio(path)
+    assert set(facts) == {"duration", "samplerate", "channels", "format"}

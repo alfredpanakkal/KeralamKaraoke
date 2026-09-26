@@ -118,3 +118,25 @@ def build_stems_argv(input_path: str, separated_dir: str, model: str) -> list[st
         "--filename", "{track}_{stem}.{ext}",
         input_path,
     ]
+
+
+def probe_audio(source) -> dict | None:
+    """Return {"duration", "samplerate", "channels", "format"} for an audio
+    file, or None when it cannot be read.
+
+    `source` is a path (str/Path) or an open binary file object. Never raises:
+    an unreadable file is reported as None so the caller can warn and let
+    Demucs produce the authoritative error. May move a file object's read
+    position; callers pass objects they do not read positionally.
+    """
+    try:
+        import soundfile as sf
+        info = sf.info(source)
+    except Exception:
+        return None
+    return {
+        "duration": float(info.duration),
+        "samplerate": int(info.samplerate),
+        "channels": int(info.channels),
+        "format": str(info.format),
+    }
