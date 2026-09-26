@@ -45,13 +45,16 @@ class FakeStreamlit:
     so one recorder covers both.
     """
 
-    def __init__(self, session_state, uploaded, mode, clicked=(), generate=False):
+    def __init__(self, session_state, uploaded, mode, clicked=(), generate=False,
+                 model_label=None):
         self.session_state = session_state
         self.sidebar = self
         self.uploaded = uploaded
         self.mode = mode
         self.clicked = set(clicked)
         self.generate = generate
+        # None means "the user left the selector on its first option".
+        self.model_label = model_label
         self.events = []  # what the script called, in order
         self.reports = []  # (level, text, session_state as the user sees it)
 
@@ -67,6 +70,9 @@ class FakeStreamlit:
 
     def write(self, text):
         pass
+
+    def subheader(self, text):
+        self.events.append(f"subheader:{text}")
 
     def caption(self, text):
         pass
@@ -92,6 +98,12 @@ class FakeStreamlit:
 
     def radio(self, label, options, horizontal=False):
         return self.mode
+
+    def selectbox(self, label, options, index=0, help=None):
+        self.events.append(f"selectbox:{label}")
+        if self.model_label is not None:
+            return self.model_label
+        return options[index]
 
     def slider(self, label, min_value, max_value, value, help=None):
         return 0
@@ -253,13 +265,16 @@ def _song_keys_left(state):
 
 
 def _deleted_path_keys_left(state):
-    """Session keys that still point at a file the click deleted.
+    """Session keys that still point at a file that is no longer there.
 
-    current_file is not one of them: it names the file the uploader is holding,
-    which the reset trigger re-seeds from the upload on every rerun, clear or
-    not. mode is not in SONG_KEYS at all.
+    current_file and model are not one of them: they name the file the uploader
+    is holding and the model the selector is on, which the reset trigger
+    re-seeds on every rerun, clear or not. mode is not in SONG_KEYS at all.
     """
-    return [key for key in _song_keys_left(state) if key != "current_file"]
+    return [
+        key for key in _song_keys_left(state)
+        if key not in ("current_file", "model")
+    ]
 
 
 def test_clear_button_empties_the_roots_and_purges_the_session(monkeypatch, tmp_path):
@@ -320,3 +335,199 @@ def test_runtime_dirs_are_anchored_to_app_dir():
         assert directory.is_absolute()
         assert directory.parent == app_root
         assert directory.name in {"uploads", "karaoke_out", "separated", "karaoke_cache"}
+
+
+FT_LABEL = "htdemucs_ft (best quality, roughly 4x slower)"
+
+
+def test_reset_song_state_replaces_previous_model(monkeypatch):
+    import app
+    from karaoke.core import MODEL_DEFAULT
+
+    state = FakeSessionState({"model": "htdemucs_ft"})
+    monkeypatch.setattr(app.st, "session_state", state)
+
+    app.reset_song_state("song.mp3", app.MODE_KARAOKE, model=MODEL_DEFAULT)
+
+    assert state["model"] == "htdemucs"
+
+
+def test_reset_song_state_omits_model_when_not_given(monkeypatch):
+    """The two-argument form must leave no model behind for a stale one to
+    be read as the current choice."""
+    import app
+
+    state = FakeSessionState()
+    monkeypatch.setattr(app.st, "session_state", state)
+
+    app.reset_song_state("song.mp3", app.MODE_KARAOKE)
+
+    assert "model" not in state
+
+
+def _run_main_with_model(monkeypatch, seeded_model, chosen_label):
+    """Run app.main() for real with a song already separated under
+    `seeded_model`, and the selector left on `chosen_label` (None = its first
+    option). Returns the fake, whose session_state is what the user is left
+    with.
+
+    Nothing is generated, so no file is written; the seeded result paths point
+    at files that do not exist, so if the reset trigger fails to fire the
+    render path reads one for real and this raises FileNotFoundError.
+    """
+    import app
+
+    state = FakeSessionState({
+        "current_file": FakeUpload.name,
+        "mode": app.MODE_KARAOKE,
+        "model": seeded_model,
+        "song_name": "My_Song",
+        "instrumental_path": f"separated/{seeded_model}/My_Song_no_vocals.wav",
+        "paths": {
+            "instrumental": f"separated/{seeded_model}/My_Song_no_vocals.wav",
+            "final": "karaoke_out/My_Song_karaoke.wav",
+            "cache_dir": "karaoke_cache/My_Song",
+        },
+    })
+    fake = FakeStreamlit(
+        state, uploaded=FakeUpload(), mode=app.MODE_KARAOKE, model_label=chosen_label
+    )
+    monkeypatch.setattr(app, "st", fake)
+    app.main()
+    return fake
+
+
+def test_switching_model_discards_the_song_separated_with_the_old_one(monkeypatch):
+    """Changing model invalidates the current song exactly as changing file
+    or mode does."""
+    fake = _run_main_with_model(monkeypatch, "htdemucs", FT_LABEL)
+
+    assert fake.session_state["model"] == "htdemucs_ft"
+    assert _deleted_path_keys_left(fake.session_state) == []
+    # The stale track is not re-rendered from the old model's output path.
+    assert "audio" not in fake.events
+
+
+def test_the_model_selector_starts_on_htdemucs(monkeypatch):
+    """Out of the box the app must still run plain htdemucs."""
+    fake = _run_main_with_model(monkeypatch, "htdemucs_ft", None)
+
+    assert fake.session_state["model"] == "htdemucs"
+
+
+class WritableUpload(FakeUpload):
+    """The Generate branch writes the upload out before separating it --
+    FakeUpload deliberately has no getbuffer, because the clear-click path
+    must never need to write the upload out again."""
+
+    def getbuffer(self):
+        return b"not really an mp3"
+
+
+def _redirect_runtime_dirs(monkeypatch, tmp_path):
+    """Point every path the Generate branch writes to into tmp_path.
+
+    BASE_DIRS is redirected too: it is frozen from the real paths at import, so
+    patching the four constants alone would still write into the real
+    karaoke_out/.
+    """
+    import app
+
+    names = ("uploads", "karaoke_out", "separated", "karaoke_cache")
+    roots = {name: tmp_path / name for name in names}
+    monkeypatch.setattr(app, "UPLOAD_DIR", roots["uploads"])
+    monkeypatch.setattr(app, "OUTPUT_DIR", roots["karaoke_out"])
+    monkeypatch.setattr(app, "SEPARATED_DIR", roots["separated"])
+    monkeypatch.setattr(app, "CACHE_DIR", roots["karaoke_cache"])
+    monkeypatch.setattr(app, "BASE_DIRS", {
+        "separated": str(roots["separated"]),
+        "output": str(roots["karaoke_out"]),
+        "cache": str(roots["karaoke_cache"]),
+    })
+    return roots
+
+
+def _click_generate(monkeypatch, tmp_path, mode):
+    """Run app.main() for real with the Generate button clicked and the
+    selector on FT_LABEL. The demucs runner is replaced by a recorder that
+    writes the files the real one would, so everything downstream of the
+    subprocess -- the pitch-shift cache, the final copy, the players -- runs
+    for real. Returns (fake, calls, roots), where calls are the
+    (input_path, separated_dir, model) triples the script passed to the runner.
+    """
+    import app
+    from karaoke.core import STEMS
+
+    roots = _redirect_runtime_dirs(monkeypatch, tmp_path)
+    calls = []
+
+    def record(input_path, separated_dir, model):
+        calls.append((input_path, separated_dir, model))
+        # Demucs writes into a directory named after the model, one file per
+        # stem. Written for real, so the render path has real files to read.
+        out = Path(separated_dir) / model
+        out.mkdir(parents=True, exist_ok=True)
+
+        def write(name):
+            path = out / name
+            path.write_bytes(b"separated audio")
+            return path
+
+        if mode == app.MODE_STEMS:
+            return {stem: str(write(f"My_Song_{stem}.wav")) for stem in STEMS}
+        return str(write("no_vocals.wav"))
+
+    monkeypatch.setattr(app, "separate_vocals", record)
+    monkeypatch.setattr(app, "separate_stems", record)
+
+    fake = FakeStreamlit(
+        FakeSessionState(),
+        uploaded=WritableUpload(),
+        mode=mode,
+        generate=True,
+        model_label=FT_LABEL,
+    )
+    monkeypatch.setattr(app, "st", fake)
+    app.main()
+    return fake, calls, roots
+
+
+def test_the_chosen_model_reaches_demucs_and_the_output_paths(monkeypatch, tmp_path):
+    """The resolved model must be what reaches the runner and the per-song
+    paths -- not the label the user picked, and not a hard-coded default."""
+    import app
+
+    fake, calls, roots = _click_generate(monkeypatch, tmp_path, app.MODE_KARAOKE)
+
+    assert calls == [(
+        str(roots["uploads"] / "My_Song.mp3"),
+        str(roots["separated"]),
+        "htdemucs_ft",
+    )]
+    assert fake.session_state["paths"]["instrumental"] == str(
+        roots["separated"] / "htdemucs_ft" / "My_Song_no_vocals.wav"
+    )
+    # A model-specific working directory, so one model's output can never be
+    # read back as another's, and the whole karaoke render path ran for real.
+    assert (roots["separated"] / "htdemucs_ft" / "no_vocals.wav").is_file()
+    assert (roots["karaoke_out"] / "My_Song_karaoke.wav").is_file()
+    assert fake.events[-1] == "download:Download Karaoke Track"
+
+
+def test_the_chosen_model_reaches_the_stems_runner(monkeypatch, tmp_path):
+    import app
+    from karaoke.core import STEMS
+
+    fake, calls, roots = _click_generate(monkeypatch, tmp_path, app.MODE_STEMS)
+
+    assert calls == [(
+        str(roots["uploads"] / "My_Song.mp3"),
+        str(roots["separated"]),
+        "htdemucs_ft",
+    )]
+    assert fake.session_state["paths"]["instrumental"] == str(
+        roots["separated"] / "htdemucs_ft" / "My_Song_no_vocals.wav"
+    )
+    assert [e for e in fake.events if e.startswith("download:Download ")] == [
+        f"download:Download {stem}" for stem in STEMS
+    ]

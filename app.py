@@ -6,6 +6,7 @@ from pathlib import Path
 import streamlit as st
 
 from karaoke.core import (
+    MODEL_OPTIONS,
     STEMS,
     build_output_paths,
     clear_generated_files,
@@ -20,7 +21,6 @@ UPLOAD_DIR = ROOT / "uploads"
 OUTPUT_DIR = ROOT / "karaoke_out"
 SEPARATED_DIR = ROOT / "separated"
 CACHE_DIR = ROOT / "karaoke_cache"
-MODEL = "htdemucs"
 
 MODE_KARAOKE = "Karaoke (remove vocals)"
 MODE_STEMS = "Stems (vocals, drums, bass, other)"
@@ -32,9 +32,16 @@ BASE_DIRS = {
 }
 
 # Session keys that describe the *current* song. Cleared wholesale when the
-# user picks a different file or mode, otherwise song A's output keeps
+# user picks a different file, mode, or model, otherwise song A's output keeps
 # rendering under song B's name.
-SONG_KEYS = ("current_file", "song_name", "instrumental_path", "stems_paths", "paths")
+SONG_KEYS = (
+    "current_file",
+    "model",
+    "song_name",
+    "instrumental_path",
+    "stems_paths",
+    "paths",
+)
 
 
 def purge_song_state() -> None:
@@ -49,10 +56,13 @@ def purge_song_state() -> None:
         st.session_state.pop(key, None)
 
 
-def reset_song_state(uploaded_name: str, mode: str) -> None:
+def reset_song_state(uploaded_name: str, mode: str, model: str | None = None) -> None:
+    """Start a new song, and a new model if one was given."""
     purge_song_state()
     st.session_state.current_file = uploaded_name
     st.session_state.mode = mode
+    if model is not None:
+        st.session_state.model = model
 
 
 def _cached_bytes(path: Path) -> bytes:
@@ -103,6 +113,16 @@ def main() -> None:
         options=[MODE_KARAOKE, MODE_STEMS],
         horizontal=True,
     )
+    model_label = st.selectbox(
+        "Demucs model",
+        list(MODEL_OPTIONS),
+        help=(
+            "The first run with any model downloads its weights. htdemucs_ft "
+            "runs four models instead of one, so it takes about four times as "
+            "long."
+        ),
+    )
+    model = MODEL_OPTIONS[model_label]
     semitones = st.slider(
         "Pitch shift (semitones)",
         min_value=-6,
@@ -123,8 +143,9 @@ def main() -> None:
     if (
         st.session_state.get("current_file") != uploaded.name
         or st.session_state.get("mode") != mode
+        or st.session_state.get("model") != model
     ):
-        reset_song_state(uploaded.name, mode)
+        reset_song_state(uploaded.name, mode, model)
 
     if st.button("Generate", type="primary"):
         try:
@@ -134,17 +155,19 @@ def main() -> None:
 
             song_name = Path(safe_name).stem
             st.session_state.song_name = song_name
-            st.session_state.paths = build_output_paths(song_name, BASE_DIRS, model=MODEL)
+            st.session_state.paths = build_output_paths(
+                song_name, BASE_DIRS, model=model
+            )
 
             if mode == MODE_KARAOKE:
                 with st.spinner("Separating vocals from instrumental... (1-3 min)"):
                     st.session_state.instrumental_path = separate_vocals(
-                        str(input_path), str(SEPARATED_DIR), MODEL
+                        str(input_path), str(SEPARATED_DIR), model
                     )
             else:
                 with st.spinner("Separating stems... (1-3 min)"):
                     st.session_state.stems_paths = separate_stems(
-                        str(input_path), str(SEPARATED_DIR), MODEL
+                        str(input_path), str(SEPARATED_DIR), model
                     )
         except RuntimeError as exc:
             st.error(f"Separation failed: {exc}")

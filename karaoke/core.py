@@ -58,6 +58,16 @@ def validate_upload_size(size_bytes: int) -> tuple[bool, str]:
     return True, ""
 
 
+# The models the UI offers: the label is what the user reads, the value is what
+# Demucs is invoked with. The first entry is the default, so the app starts on
+# plain htdemucs.
+MODEL_DEFAULT = "htdemucs"
+MODEL_OPTIONS = {
+    "htdemucs (fast, good enough for karaoke)": "htdemucs",
+    "htdemucs_ft (best quality, roughly 4x slower)": "htdemucs_ft",
+}
+
+
 def build_output_paths(
     song_name: str, base_dirs: dict, model: str = "htdemucs"
 ) -> dict:

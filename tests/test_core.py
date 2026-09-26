@@ -31,6 +31,31 @@ def test_sanitise_name_preserves_extension():
     assert karaoke.core.sanitise_name("track.WAV").endswith(".WAV")
 
 
+def test_model_options_map_the_two_exact_labels():
+    assert karaoke.core.MODEL_OPTIONS == {
+        "htdemucs (fast, good enough for karaoke)": "htdemucs",
+        "htdemucs_ft (best quality, roughly 4x slower)": "htdemucs_ft",
+    }
+
+
+def test_model_default_is_htdemucs():
+    assert karaoke.core.MODEL_DEFAULT == "htdemucs"
+    # The model the UI starts on must be one a user can still get back to.
+    assert karaoke.core.MODEL_DEFAULT in karaoke.core.MODEL_OPTIONS.values()
+
+
+def test_model_option_values_are_non_empty_strings():
+    for value in karaoke.core.MODEL_OPTIONS.values():
+        assert isinstance(value, str) and value.strip()
+
+
+def test_the_first_model_option_is_the_default():
+    # The selector offers list(MODEL_OPTIONS) with no index, so entry order
+    # is the out-of-the-box choice.
+    labels = list(karaoke.core.MODEL_OPTIONS)
+    assert karaoke.core.MODEL_OPTIONS[labels[0]] == karaoke.core.MODEL_DEFAULT
+
+
 def test_build_output_paths_creates_per_song_dirs():
     base = {"separated": "separated", "output": "karaoke_out", "cache": "karaoke_cache"}
     paths = karaoke.core.build_output_paths("my_song", base)

@@ -49,7 +49,7 @@ streamlit run app.py
 
 Opens at <http://localhost:8501>.
 
-The first run downloads the Demucs model weights (~80 MB) into `~/.cache/torch` — expect a pause before the first song processes.
+The first run with a model downloads its weights into `~/.cache/torch` — about 80 MB for `htdemucs`, several times that for `htdemucs_ft` — so expect a pause before the first song processes.
 
 ## How it works
 
@@ -57,6 +57,8 @@ Two modes, selected in the UI:
 
 1. **Karaoke** — Demucs splits the track into vocals and everything else (`--two-stems=vocals`), then librosa applies an optional −6 to +6 semitone pitch shift, duration preserved.
 2. **Stems** — Demucs' default 4-stem mode splits the track into vocals, drums, bass, and other. Each stem gets its own player and download button. (No pitch shift in this mode.)
+
+The **Demucs model** dropdown next to the mode buttons picks which model does the work. `htdemucs` is the default and is fast enough for karaoke; `htdemucs_ft` gives the best quality but runs four models instead of one, so it takes roughly 4x as long. Changing the model discards the current song's results.
 
 ## Output layout
 
@@ -66,8 +68,8 @@ Every path below sits next to `app.py`, whichever directory you launch the app f
 |---|---|
 | `karaoke_out/<song>_karaoke.wav` | Final karaoke download, matches the current slider value |
 | `karaoke_cache/<song>/` | Cached pitch-shift variants, keyed on audio content + semitones |
-| `separated/htdemucs/<song>_<stem>.wav` | Stems mode output (per-song named by demucs) |
-| `separated/htdemucs/` | Demucs working directory; karaoke-mode flat files copied out per-song |
+| `separated/<model>/<song>_<stem>.wav` | Stems mode output (per-song named by demucs) |
+| `separated/<model>/` | Demucs working directory; karaoke-mode flat files copied out per-song |
 
 Each song gets its own cache and output names, so processing a second song never overwrites the first.
 
