@@ -1,3 +1,8 @@
+> **Historical.** This is the original implementation plan, kept for the record.
+> `README.md` documents current behaviour. §7b below describes filename sanitisation
+> as it stood before commits `712e2b5` and `e90b1e0`; the current `safe_upload_name`
+> also blocks path traversal and Windows reserved device names.
+
 ```markdown
 
 \# Karaoke Track Generator — Full Plan

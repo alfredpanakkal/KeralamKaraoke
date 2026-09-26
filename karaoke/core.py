@@ -1,4 +1,4 @@
-"""Pure logic: filename sanitisation, path construction, CLI argv building."""
+"""Filename and path logic, Demucs argv, and the filesystem work around them."""
 
 import os
 import re

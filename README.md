@@ -7,7 +7,7 @@ Upload an `.mp3` or `.wav`, get back `.wav` files you can preview in the browser
 ## Requirements
 
 - Python 3.11+
-- An NVIDIA GPU makes this practical (separation takes 1-3 min on a laptop GPU, far longer on CPU). Demucs auto-detects CUDA / Apple MPS / CPU, so it runs without a GPU — just slowly.
+- An NVIDIA GPU makes this practical. Separation runs at roughly 45 seconds of processing per minute of audio, a rate measured on an RTX 4050, and CPU-only runs are several times slower. Demucs auto-detects CUDA / Apple MPS / CPU, so it runs without a GPU — just slowly.
 
 ## Setup
 
@@ -66,6 +66,7 @@ Every path below sits next to `app.py`, whichever directory you launch the app f
 
 | Path | Contents |
 |---|---|
+| `uploads/<song>.<ext>` | The copy of the file you uploaded |
 | `karaoke_out/<song>_karaoke.wav` | Final karaoke download, matches the current slider value |
 | `karaoke_cache/<song>/` | Cached pitch-shift variants, keyed on audio content + semitones |
 | `separated/<model>/<song>_<stem>.wav` | Stems mode output (per-song named by demucs) |
@@ -79,7 +80,12 @@ Each song gets its own cache and output names, so processing a second song never
 - Pitch-shift results are cached by content hash, so revisiting a slider value is instant and the cache survives restarts. Once `karaoke_cache/` passes 2 GB, the least recently modified entries are deleted to make room.
 - The sidebar's **Clear generated files** button empties all four directories at once. That includes the copy the app made in `uploads/`, not your original file.
 - Separation quality varies by song. Dense mixes with heavy reverb or layered vocals separate less cleanly than vocal-forward tracks.
-- The figure under the uploader is an estimate, not a promise. It reads the audio header to get the length, then assumes 45 seconds of audio per minute of processing — a rough rate measured on an RTX 4050. CPU-only runs are several times slower, and `htdemucs_ft` runs four models, so treat it as a floor.
+- The time estimates are rough, not promises. The app reads the audio header for the length, then assumes 45 seconds of audio per minute of processing — a rate measured on an RTX 4050. The same figure appears in the separation spinner, which falls back to `1-3 min` when the length is unknown. CPU-only runs are several times slower, and `htdemucs_ft` runs four models, so treat every one of them as a floor.
+- A file the app cannot read as audio produces a warning and nothing more — the check never blocks an upload. If separation then fails, Demucs reports the real reason.
+
+## Limitations
+
+- CI runs on `windows-latest` rather than Linux. The filename tests assert Windows rules — forbidden characters, reserved device names like `CON` — and the tests that need a file Windows refuses to delete are skipped on every other platform.
 
 ## Tests
 
