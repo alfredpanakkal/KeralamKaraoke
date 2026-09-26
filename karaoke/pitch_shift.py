@@ -50,6 +50,10 @@ def pitch_shift_cached(
     # suffix so soundfile can infer the output format.
     tmp_path = cache_path.with_name(cache_path.stem + ".tmp.wav")
     shutil.copy2(instrumental_path, tmp_path)
-    (shifter or _shift_audio)(str(tmp_path), semitones)
+    try:
+        (shifter or _shift_audio)(str(tmp_path), semitones)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
     tmp_path.replace(cache_path)
     return str(cache_path)

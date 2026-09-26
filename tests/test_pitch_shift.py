@@ -1,3 +1,5 @@
+import pytest
+import re
 from pathlib import Path
 
 import numpy as np
@@ -75,4 +77,16 @@ def test_cache_key_is_blake2b_and_content_sensitive(tmp_path):
     key_b = karaoke.pitch_shift._cache_key(str(b), 2)
     assert key_a1 == key_a2          # deterministic
     assert key_a1 != key_b           # content-sensitive
-    assert key_a1.split("_")[1].isalnum() and len(key_a1.split("_")[1]) == 32
+    assert re.fullmatch(r".*_[0-9a-f]{32}_[+-]\d+\.wav", key_a1)
+
+
+def test_failed_shift_leaves_no_orphaned_tmp(tmp_path):
+    src = _write_wav(tmp_path / "in.wav")
+    cache = str(tmp_path / "cache")
+
+    def crash(p, s):
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        karaoke.pitch_shift.pitch_shift_cached(str(src), 2, cache, shifter=crash)
+    assert list(Path(cache).glob("*")) == []
