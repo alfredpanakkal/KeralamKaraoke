@@ -1,8 +1,8 @@
 # Karaoke Track Generator
 
-Browser GUI that strips vocals out of a song using Meta's [Demucs](https://github.com/facebookresearch/demucs), with optional pitch shifting.
+Browser GUI that strips vocals out of a song using Meta's [Demucs](https://github.com/facebookresearch/demucs), with optional pitch shifting — or splits a track into individual **vocals / drums / bass / other** stems.
 
-Upload an `.mp3` or `.wav`, get back an instrumental-only `.wav` you can preview in the browser and download.
+Upload an `.mp3` or `.wav`, get back `.wav` files you can preview in the browser and download.
 
 ## Requirements
 
@@ -34,18 +34,21 @@ The first run downloads the Demucs model weights (~80 MB) into `~/.cache/torch` 
 
 ## How it works
 
-1. **Separate** — Demucs splits the track into vocals and everything else. `--two-stems=vocals` is faster than full 4-stem separation.
-2. **Pitch shift** *(optional)* — librosa shifts the instrumental by −6 to +6 semitones, duration preserved.
+Two modes, selected in the UI:
+
+1. **Karaoke** — Demucs splits the track into vocals and everything else (`--two-stems=vocals`), then librosa applies an optional −6 to +6 semitone pitch shift, duration preserved.
+2. **Stems** — Demucs' default 4-stem mode splits the track into vocals, drums, bass, and other. Each stem gets its own player and download button. (No pitch shift in this mode.)
 
 ## Output layout
 
 | Path | Contents |
 |---|---|
-| `karaoke_out/<song>_karaoke.wav` | Final download, matches the current slider value |
+| `karaoke_out/<song>_karaoke.wav` | Final karaoke download, matches the current slider value |
 | `karaoke_cache/<song>/` | Cached pitch-shift variants, keyed on audio content + semitones |
-| `separated/htdemucs/` | Demucs working directory (reused per run) |
+| `separated/htdemucs/<song>_<stem>.wav` | Stems mode output (per-song named by demucs) |
+| `separated/htdemucs/` | Demucs working directory; karaoke-mode flat files copied out per-song |
 
-Each song gets its own cache and output name, so processing a second song never overwrites the first.
+Each song gets its own cache and output names, so processing a second song never overwrites the first.
 
 ## Notes
 

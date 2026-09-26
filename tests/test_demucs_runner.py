@@ -64,3 +64,36 @@ def test_separate_vocals_raises_when_output_missing(tmp_path):
             karaoke.demucs_runner.separate_vocals(
                 str(tmp_path / "gone.mp3"), str(tmp_path / "separated"), "htdemucs"
             )
+
+
+def test_separate_stems_returns_all_four_stems(tmp_path):
+    out_dir = tmp_path / "separated" / "htdemucs"
+    out_dir.mkdir(parents=True)
+    for stem in ("vocals", "drums", "bass", "other"):
+        (out_dir / f"mysong_{stem}.wav").write_bytes(stem.encode())
+
+    with patch.object(karaoke.demucs_runner, "run_demucs", return_value=(0, "", "")):
+        stems = karaoke.demucs_runner.separate_stems(
+            str(tmp_path / "mysong.mp3"), str(tmp_path / "separated"), "htdemucs"
+        )
+
+    assert set(stems) == {"vocals", "drums", "bass", "other"}
+    assert Path(stems["drums"]).read_bytes() == b"drums"
+
+
+def test_separate_stems_raises_with_stderr_on_failure():
+    with patch.object(karaoke.demucs_runner, "run_demucs", return_value=(1, "", "boom")):
+        with pytest.raises(RuntimeError, match="boom"):
+            karaoke.demucs_runner.separate_stems("song.mp3", "separated", "htdemucs")
+
+
+def test_separate_stems_raises_when_a_stem_is_missing(tmp_path):
+    out_dir = tmp_path / "separated" / "htdemucs"
+    out_dir.mkdir(parents=True)
+    (out_dir / "song_vocals.wav").write_bytes(b"vocals")
+
+    with patch.object(karaoke.demucs_runner, "run_demucs", return_value=(0, "", "")):
+        with pytest.raises(RuntimeError, match="missing"):
+            karaoke.demucs_runner.separate_stems(
+                str(tmp_path / "song.mp3"), str(tmp_path / "separated"), "htdemucs"
+            )

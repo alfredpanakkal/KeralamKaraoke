@@ -53,3 +53,17 @@ def test_build_demucs_argv_uses_correct_flags():
     assert "/path/input.mp3" in argv
     # Device must NOT be hardcoded -- demucs auto-detects cuda/mps/cpu.
     assert "--device" not in argv
+
+
+def test_build_stems_argv_has_no_two_stems_and_per_song_names():
+    argv = karaoke.core.build_stems_argv("/path/input.mp3", "separated", "htdemucs")
+    assert "python" in argv[0].lower()
+    assert argv[1] == "-m" and argv[2] == "demucs"
+    assert "-n" in argv and "htdemucs" in argv
+    # Full 4-stem mode: no --two-stems restriction.
+    assert not any(flag.startswith("--two-stems") for flag in argv)
+    # Stems must be named per-song so tracks cannot clobber each other.
+    assert "--filename" in argv and "{track}_{stem}.{ext}" in argv
+    assert "-o" in argv and "separated" in argv
+    assert "/path/input.mp3" in argv
+    assert "--device" not in argv

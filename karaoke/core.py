@@ -60,3 +60,23 @@ def build_demucs_argv(input_path: str, separated_dir: str, model: str) -> list[s
         "--filename", "{stem}.{ext}",
         input_path,
     ]
+
+
+STEMS = ("vocals", "drums", "bass", "other")
+
+
+def build_stems_argv(input_path: str, separated_dir: str, model: str) -> list[str]:
+    """Build argv for full 4-stem separation (vocals, drums, bass, other).
+
+    Unlike the karaoke argv, there is no --two-stems flag, and the
+    filename template is "{track}_{stem}.{ext}" so every stem is already
+    named per-song (test_drums.wav, ...) and needs no copy afterwards.
+    """
+    return [
+        sys.executable,
+        "-m", "demucs",
+        "-n", model,
+        "-o", separated_dir,
+        "--filename", "{track}_{stem}.{ext}",
+        input_path,
+    ]

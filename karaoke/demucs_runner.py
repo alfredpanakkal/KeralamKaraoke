@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from karaoke.core import build_demucs_argv, build_output_paths
+from karaoke.core import STEMS, build_demucs_argv, build_output_paths, build_stems_argv
 
 TIMEOUT_SECONDS = 1800
 
@@ -47,3 +47,33 @@ def separate_vocals(input_path: str, separated_dir: str, model: str) -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(produced, dest)
     return str(dest)
+
+
+def separate_stems(input_path: str, separated_dir: str, model: str) -> dict[str, str]:
+    """Separate a track into vocals/drums/bass/other stems.
+
+    Uses --filename "{track}_{stem}.{ext}", so demucs names every stem
+    per-song; no copy step is needed. Returns {stem_name: file_path}.
+    Raises RuntimeError on failure or if any expected stem is missing.
+    """
+    returncode, _stdout, stderr = run_demucs(
+        build_stems_argv(input_path, separated_dir, model)
+    )
+    if returncode != 0:
+        raise RuntimeError(f"Demucs failed (exit code {returncode}):\n{stderr}")
+
+    track = Path(input_path).stem
+    out_dir = Path(separated_dir) / model
+    stems: dict[str, str] = {}
+    missing: list[str] = []
+    for stem in STEMS:
+        produced = out_dir / f"{track}_{stem}.wav"
+        if produced.exists():
+            stems[stem] = str(produced)
+        else:
+            missing.append(stem)
+    if missing:
+        raise RuntimeError(
+            f"Demucs reported success but stems are missing: {', '.join(missing)}"
+        )
+    return stems
