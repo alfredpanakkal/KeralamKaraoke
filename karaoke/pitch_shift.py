@@ -20,7 +20,9 @@ def _shift_audio(path: str, semitones: int) -> None:
 
 
 def _cache_key(instrumental_path: str, semitones: int) -> str:
-    digest = hashlib.md5(Path(instrumental_path).read_bytes()).hexdigest()[:16]
+    digest = hashlib.blake2b(
+        Path(instrumental_path).read_bytes(), digest_size=16
+    ).hexdigest()
     return f"{Path(instrumental_path).stem}_{digest}_{semitones:+d}.wav"
 
 

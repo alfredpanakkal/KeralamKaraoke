@@ -63,3 +63,16 @@ def test_no_partial_file_left_behind_on_success(tmp_path):
     cache = str(tmp_path / "cache")
     karaoke.pitch_shift.pitch_shift_cached(str(src), 1, cache, shifter=lambda p, s: None)
     assert list(Path(cache).glob("*.tmp.wav")) == []
+
+
+def test_cache_key_is_blake2b_and_content_sensitive(tmp_path):
+    a = tmp_path / "a.wav"
+    b = tmp_path / "b.wav"
+    a.write_bytes(b"same-bytes")
+    b.write_bytes(b"other-bytes")
+    key_a1 = karaoke.pitch_shift._cache_key(str(a), 2)
+    key_a2 = karaoke.pitch_shift._cache_key(str(a), 2)
+    key_b = karaoke.pitch_shift._cache_key(str(b), 2)
+    assert key_a1 == key_a2          # deterministic
+    assert key_a1 != key_b           # content-sensitive
+    assert key_a1.split("_")[1].isalnum() and len(key_a1.split("_")[1]) == 32
