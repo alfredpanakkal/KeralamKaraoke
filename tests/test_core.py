@@ -199,6 +199,20 @@ def test_probe_audio_returns_exactly_the_four_expected_keys(tmp_path):
     assert set(facts) == {"duration", "samplerate", "channels", "format"}
 
 
+def test_estimate_seconds_per_minute_is_the_measured_gpu_rate():
+    assert karaoke.core.ESTIMATE_SECONDS_PER_MINUTE == 45
+
+
+@pytest.mark.parametrize(
+    ("seconds", "minutes"),
+    [(0, 1), (-5, 1), (30, 1), (90, 2), (3600, 80)],
+)
+def test_estimate_minutes(seconds, minutes):
+    # A one-minute floor whatever the header says, so a short or unreadable
+    # duration never reads as "0 min to process".
+    assert karaoke.core.estimate_minutes(seconds) == minutes
+
+
 def test_clear_generated_files_empties_the_roots_and_keeps_them(tmp_path):
     uploads = tmp_path / "uploads"
     cache = tmp_path / "karaoke_cache"

@@ -1,9 +1,12 @@
+import array
+import io
 import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import soundfile as sf
 
 
 class FakeSessionState(dict):
@@ -25,15 +28,48 @@ class FakeSessionState(dict):
             raise AttributeError(name)
 
 
-class FakeUpload:
-    """Just enough UploadedFile for main(): a name and a size.
+def _wav_bytes(seconds, rate=8000):
+    """Real wav bytes, in memory.
 
-    getbuffer() is deliberately absent -- the click path must never need to
-    write the upload out again.
+    8-bit mono keeps a 90-second fixture at 720 KB instead of 5.7 MB, which is
+    what makes a duration long enough to move the estimate off its floor
+    affordable in a test.
     """
+    samples = array.array("h", [0]) * int(seconds * rate)
+    buffer = io.BytesIO()
+    sf.write(buffer, samples, rate, format="WAV", subtype="PCM_U8")
+    return buffer.getvalue()
 
+
+# 0.5 s at 8 kHz, 8-bit mono: a real header to read, for every test that just
+# needs an upload that is readable audio.
+SHORT_AUDIO = _wav_bytes(0.5)
+
+# 90.0 s at 8 kHz, 8-bit mono: 720,044 bytes, so the caption reads
+# "0.7 MB ... 90s of audio ... about 2 min to process".
+LONG_AUDIO = _wav_bytes(90)
+
+
+class FakeUpload(io.BytesIO):
+    """Just enough UploadedFile for main(): a name, a size, and real audio.
+
+    Streamlit hands the script an io.BytesIO subclass, and app.py reads its
+    audio header straight off that object, so the double is one too -- a name
+    and a size alone would probe as unreadable and warn on every run.
+
+    `payload` overrides the audio, for the file that is not audio at all.
+    """
     name = "My_Song.mp3"
-    size = 4 * 1024 * 1024
+
+    def __init__(self, payload=None):
+        audio = SHORT_AUDIO if payload is None else payload
+        super().__init__(audio)
+        self.size = len(audio)
+
+    def getbuffer(self):
+        # Only the Generate branch may touch the buffer, so a copy there is a
+        # real cost. The probe has to read the upload itself.
+        raise AssertionError("getbuffer() is the Generate branch's, not the probe's")
 
 
 class FakeStreamlit:
@@ -57,6 +93,10 @@ class FakeStreamlit:
         self.model_label = model_label
         self.events = []  # what the script called, in order
         self.reports = []  # (level, text, session_state as the user sees it)
+        # Kept out of `events` so an ordering assertion never trips over a word
+        # in the copy itself.
+        self.captions = []
+        self.spinners = []
 
     def _report(self, level, text):
         # Snapshot the session at report time: the ordering test reads it.
@@ -75,7 +115,7 @@ class FakeStreamlit:
         self.events.append(f"subheader:{text}")
 
     def caption(self, text):
-        pass
+        self.captions.append(text)
 
     def info(self, text):
         pass
@@ -117,6 +157,7 @@ class FakeStreamlit:
     @contextmanager
     def spinner(self, text):
         self.events.append("spinner")
+        self.spinners.append(text)
         yield
 
     def audio(self, data):
@@ -417,11 +458,25 @@ def test_the_model_selector_starts_on_htdemucs(monkeypatch):
 
 class WritableUpload(FakeUpload):
     """The Generate branch writes the upload out before separating it --
-    FakeUpload deliberately has no getbuffer, because the clear-click path
-    must never need to write the upload out again."""
+    FakeUpload refuses getbuffer, because no other path may need to."""
 
     def getbuffer(self):
         return b"not really an mp3"
+
+
+class LongUpload(WritableUpload):
+    """90 seconds of real audio, so the estimate is 2 minutes and not the
+    one-minute floor a short clip would report."""
+
+    def __init__(self):
+        super().__init__(payload=LONG_AUDIO)
+
+
+class UnreadableUpload(WritableUpload):
+    """Real bytes that are not audio, so the probe reports None."""
+
+    def __init__(self):
+        super().__init__(payload=b"not audio at all")
 
 
 def _redirect_runtime_dirs(monkeypatch, tmp_path):
@@ -447,7 +502,7 @@ def _redirect_runtime_dirs(monkeypatch, tmp_path):
     return roots
 
 
-def _click_generate(monkeypatch, tmp_path, mode):
+def _click_generate(monkeypatch, tmp_path, mode, upload=None):
     """Run app.main() for real with the Generate button clicked and the
     selector on FT_LABEL. The demucs runner is replaced by a recorder that
     writes the files the real one would, so everything downstream of the
@@ -482,7 +537,7 @@ def _click_generate(monkeypatch, tmp_path, mode):
 
     fake = FakeStreamlit(
         FakeSessionState(),
-        uploaded=WritableUpload(),
+        uploaded=WritableUpload() if upload is None else upload,
         mode=mode,
         generate=True,
         model_label=FT_LABEL,
@@ -531,3 +586,51 @@ def test_the_chosen_model_reaches_the_stems_runner(monkeypatch, tmp_path):
     assert [e for e in fake.events if e.startswith("download:Download ")] == [
         f"download:Download {stem}" for stem in STEMS
     ]
+
+
+# Both separation spinners, by the mode that reaches them; each must carry the
+# estimate.
+SEPARATION_LABELS = {
+    "karaoke": "Separating vocals from instrumental...",
+    "stems": "Separating stems...",
+}
+
+
+@pytest.mark.parametrize("mode_key", sorted(SEPARATION_LABELS))
+def test_the_caption_reports_the_size_duration_and_estimate(monkeypatch, tmp_path,
+                                                            mode_key):
+    """Every figure in the caption is real: the size comes off the upload, the
+    duration out of its header.
+
+    The 90-second fixture puts the estimate at 2 minutes, so this fails if the
+    caption quotes a fixed number or the one-minute floor. FakeUpload.getbuffer
+    raises, so it also fails if the probe ever copies the upload to read it.
+    """
+    import app
+
+    mode = app.MODE_KARAOKE if mode_key == "karaoke" else app.MODE_STEMS
+    fake, _calls, _roots = _click_generate(
+        monkeypatch, tmp_path, mode, upload=LongUpload()
+    )
+
+    assert "0.7 MB · 90s of audio · about 2 min to process" in fake.captions
+    assert fake.spinners[0] == f"{SEPARATION_LABELS[mode_key]} (about 2 min)"
+
+
+def test_an_unreadable_upload_warns_and_still_separates(monkeypatch, tmp_path):
+    """The probe never blocks: a file it cannot read warns and the run carries
+    on, with the spinner back to the wording it had before the estimate."""
+    import app
+
+    fake, calls, _roots = _click_generate(
+        monkeypatch, tmp_path, app.MODE_KARAOKE, upload=UnreadableUpload()
+    )
+
+    warned = [text for level, text, _state in fake.reports if level == "warning"]
+    assert len(warned) == 1
+    assert "Could not read this file as audio" in warned[0]
+    # No estimate to show, so no file-facts caption either.
+    assert not any("min to process" in caption for caption in fake.captions)
+    # The separation still ran: the warning is advisory.
+    assert len(calls) == 1
+    assert fake.spinners[0] == "Separating vocals from instrumental... (1-3 min)"

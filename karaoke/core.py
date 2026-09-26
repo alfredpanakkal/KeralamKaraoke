@@ -152,6 +152,19 @@ def probe_audio(source) -> dict | None:
     }
 
 
+# Rough processing throughput of a mid-range CUDA GPU, measured on an
+# RTX 4050: about 45 seconds of audio per minute of processing. CPU-only is
+# several times slower. The copy is advisory, never a promise.
+ESTIMATE_SECONDS_PER_MINUTE = 45
+
+
+def estimate_minutes(duration_seconds: float) -> int:
+    """Rough minutes to process `duration_seconds` of audio; at least 1."""
+    if duration_seconds <= 0:
+        return 1
+    return max(1, round(duration_seconds / ESTIMATE_SECONDS_PER_MINUTE))
+
+
 def clear_generated_files(dirs) -> tuple[int, list[str]]:
     """Delete the contents of each directory in `dirs`, keeping the
     directories themselves.

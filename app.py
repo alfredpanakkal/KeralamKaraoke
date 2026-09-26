@@ -10,6 +10,8 @@ from karaoke.core import (
     STEMS,
     build_output_paths,
     clear_generated_files,
+    estimate_minutes,
+    probe_audio,
     safe_upload_name,
     validate_upload_size,
 )
@@ -140,6 +142,21 @@ def main() -> None:
         st.error(msg)
         return
 
+    # The upload itself, not a copy of it: an UploadedFile is an io.BytesIO, so
+    # the header read costs a seek and nothing else, on every rerun.
+    facts = probe_audio(uploaded)
+    est_minutes = estimate_minutes(facts["duration"]) if facts else None
+    if facts is None:
+        st.warning(
+            "Could not read this file as audio. If separation fails, try a "
+            "different mp3 or wav."
+        )
+    else:
+        st.caption(
+            f"{uploaded.size / (1024 * 1024):.1f} MB · "
+            f"{facts['duration']:.0f}s of audio · about {est_minutes} min to process"
+        )
+
     if (
         st.session_state.get("current_file") != uploaded.name
         or st.session_state.get("mode") != mode
@@ -159,13 +176,16 @@ def main() -> None:
                 song_name, BASE_DIRS, model=model
             )
 
+            # Advisory: an estimate from a laptop GPU, so word it as one.
+            eta = f"about {est_minutes} min" if est_minutes else "1-3 min"
+
             if mode == MODE_KARAOKE:
-                with st.spinner("Separating vocals from instrumental... (1-3 min)"):
+                with st.spinner(f"Separating vocals from instrumental... ({eta})"):
                     st.session_state.instrumental_path = separate_vocals(
                         str(input_path), str(SEPARATED_DIR), model
                     )
             else:
-                with st.spinner("Separating stems... (1-3 min)"):
+                with st.spinner(f"Separating stems... ({eta})"):
                     st.session_state.stems_paths = separate_stems(
                         str(input_path), str(SEPARATED_DIR), model
                     )
