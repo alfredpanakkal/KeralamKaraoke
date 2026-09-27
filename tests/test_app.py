@@ -251,6 +251,38 @@ def test_import_app_runs_without_streamlit():
     assert hasattr(app, "reset_song_state")
 
 
+def test_restaging_refreshes_static_file_validators(monkeypatch, tmp_path):
+    """Re-staging the same song must rewrite the static file with a new mtime.
+
+    Browsers revalidate cached stems against ETag/Last-Modified, both derived
+    from the file's (mtime, size). If re-staging ever left the mtime unchanged,
+    a reprocessed song would serve stale audio from the browser cache.
+    """
+    import app
+
+    monkeypatch.setattr(app, "ROOT", tmp_path)
+    stems_paths = {}
+    for stem in ("vocals", "drums", "bass", "other"):
+        src = tmp_path / f"{stem}.wav"
+        src.write_bytes(b"RIFF")
+        stems_paths[stem] = str(src)
+
+    app._stage_stems_static(stems_paths, "Song")
+    dest = tmp_path / "static" / "stems" / "Song" / "vocals.wav"
+    first_mtime = dest.stat().st_mtime_ns
+
+    # Simulate reprocessing: new source bytes with a different mtime
+    src = tmp_path / "vocals.wav"
+    src.write_bytes(b"RIFF_new")
+    older = (time.time_ns() // 1_000_000_000 - 10) * 1_000_000_000
+    os.utime(src, ns=(older, older))
+
+    app._stage_stems_static(stems_paths, "Song")
+    second_mtime = dest.stat().st_mtime_ns
+
+    assert second_mtime != first_mtime
+
+
 def test_cached_bytes_rereads_on_mtime_change(tmp_path, monkeypatch):
     import app
 
