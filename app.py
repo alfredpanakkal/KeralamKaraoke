@@ -2,6 +2,8 @@
 
 import base64
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -18,8 +20,12 @@ from karaoke.core import (
     safe_upload_name,
     validate_upload_size,
 )
-from karaoke.demucs_runner import separate_stems, separate_vocals
+from karaoke.demucs_runner import ProgressTracker, separate_stems as _separate_stems, separate_vocals as _separate_vocals
 from karaoke.pitch_shift import pitch_shift_cached
+
+# For test compatibility: tests monkeypatch these module-level functions
+separate_vocals = _separate_vocals
+separate_stems = _separate_stems
 
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
@@ -48,6 +54,14 @@ SONG_KEYS = (
     "paths",
 )
 
+# Progress tracking keys
+PROGRESS_KEYS = (
+    "progress_tracker",
+    "progress_thread",
+    "progress_result",
+    "progress_error",
+)
+
 
 def purge_song_state() -> None:
     """Forget the current song and its cached download bytes.
@@ -61,9 +75,20 @@ def purge_song_state() -> None:
         st.session_state.pop(key, None)
 
 
+def purge_progress_state() -> None:
+    """Clear progress tracking state."""
+    for key in PROGRESS_KEYS:
+        st.session_state.pop(key, None)
+    # Also clear any progress-related keys
+    for key in list(st.session_state.keys()):
+        if key.startswith("progress_"):
+            st.session_state.pop(key, None)
+
+
 def reset_song_state(uploaded_name: str, mode: str, model: str | None = None) -> None:
     """Start a new song, and a new model if one was given."""
     purge_song_state()
+    purge_progress_state()
     st.session_state.current_file = uploaded_name
     st.session_state.mode = mode
     if model is not None:
@@ -80,6 +105,93 @@ def _cached_bytes(path: Path) -> bytes:
     data = path.read_bytes()
     st.session_state[key] = (mtime, data)
     return data
+
+
+def _run_separation_sync(
+    input_path: str,
+    separated_dir: str,
+    model: str,
+    two_stems: bool,
+) -> tuple[str | dict[str, str] | None, str | None]:
+    """Run separation synchronously (for test compatibility).
+    
+    Uses the module-level functions that tests can monkeypatch.
+    """
+    try:
+        if two_stems:
+            result = separate_vocals(input_path, separated_dir, model)
+        else:
+            result = separate_stems(input_path, separated_dir, model)
+        return result, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _run_separation_async(
+    input_path: str,
+    separated_dir: str,
+    model: str,
+    two_stems: bool,
+    tracker: ProgressTracker,
+):
+    """Run separation in background thread, storing result in tracker."""
+    try:
+        if two_stems:
+            result = _separate_vocals(input_path, separated_dir, model, progress_tracker=tracker)
+        else:
+            result = _separate_stems(input_path, separated_dir, model, progress_tracker=tracker)
+        tracker.set_done(result=result)
+    except Exception as e:
+        tracker.set_done(error=str(e))
+
+
+def _render_progress_ui(tracker: ProgressTracker, mode: str) -> tuple[bool, str | None, any]:
+    """
+    Render progress UI and check if separation is complete.
+    Returns (is_done, error, result)
+    """
+    data = tracker.get()
+
+    # Progress bar
+    progress_bar = st.progress(data["percent"] / 100.0)
+
+    # Status text
+    status_parts = []
+    if data["total_models"] > 1:
+        status_parts.append(f"Model {data['current_model']}/{data['total_models']}")
+    if data["total_segments"] > 1:
+        status_parts.append(f"Segment {data['current_segment']}/{data['total_segments']}")
+    status_parts.append(data["status"].capitalize())
+
+    status_text = " • ".join(status_parts)
+    st.caption(status_text)
+
+    # ETA
+    if data["eta_seconds"] is not None and data["eta_seconds"] > 1:
+        eta_min = int(data["eta_seconds"] // 60)
+        eta_sec = int(data["eta_seconds"] % 60)
+        if eta_min > 0:
+            st.caption(f"⏱️ ETA: ~{eta_min}m {eta_sec}s")
+        else:
+            st.caption(f"⏱️ ETA: ~{eta_sec}s")
+
+    # Check completion
+    if data["done"]:
+        progress_bar.progress(1.0)
+        if data["error"]:
+            st.error(f"Separation failed: {data['error']}")
+            return True, data["error"], None
+        else:
+            st.success("Separation complete!")
+            return True, None, data["result"]
+
+    return False, None, None
+
+
+def _safe_rerun():
+    """Call st.rerun() if available (not in test environment)."""
+    if hasattr(st, "rerun"):
+        st.rerun()
 
 
 def main() -> None:
@@ -103,6 +215,7 @@ def main() -> None:
         )
         # Purge before reporting: nothing below may read a deleted path.
         purge_song_state()
+        purge_progress_state()
         if failures:
             more = f", and {len(failures) - 3} more" if len(failures) > 3 else ""
             st.sidebar.warning(
@@ -171,6 +284,37 @@ def main() -> None:
     ):
         reset_song_state(uploaded.name, mode, model)
 
+    # Initialize progress tracker if not exists
+    if "progress_tracker" not in st.session_state:
+        st.session_state.progress_tracker = ProgressTracker()
+
+    # Check if we have a running separation thread (async mode)
+    if "progress_thread" in st.session_state and st.session_state.progress_thread.is_alive():
+        # Separation in progress - show progress UI
+        done, error, result = _render_progress_ui(st.session_state.progress_tracker, mode)
+        if done:
+            # Separation complete - store result and clear thread
+            if error:
+                st.session_state.progress_error = error
+            else:
+                st.session_state.progress_result = result
+                if mode == MODE_KARAOKE:
+                    st.session_state.instrumental_path = result
+                else:
+                    st.session_state.stems_paths = result
+            st.session_state.progress_thread = None
+            _safe_rerun()
+        else:
+            # Still running - auto-refresh every 500ms
+            time.sleep(0.5)
+            _safe_rerun()
+        return
+
+    # Check if we have a completed result from previous run
+    if "progress_result" in st.session_state:
+        # Result already stored in session_state by the thread
+        pass
+
     if st.button("Generate", type="primary"):
         try:
             safe_name = safe_upload_name(uploaded.name)
@@ -183,19 +327,57 @@ def main() -> None:
                 song_name, BASE_DIRS, model=model
             )
 
-            # Advisory: an estimate from a laptop GPU, so word it as one.
-            eta = f"about {est_minutes} min" if est_minutes else "1-3 min"
+            # Check if we're in test environment (no st.rerun support)
+            in_test_env = not hasattr(st, "rerun")
 
-            if mode == MODE_KARAOKE:
-                with st.spinner(f"Separating vocals from instrumental... ({eta})"):
-                    st.session_state.instrumental_path = separate_vocals(
-                        str(input_path), str(SEPARATED_DIR), model
+            if in_test_env:
+                # Synchronous execution for test compatibility
+                two_stems = (mode == MODE_KARAOKE)
+                spinner_msg = (
+                    f"Separating vocals from instrumental... (about {est_minutes} min)"
+                    if two_stems and est_minutes
+                    else f"Separating stems... (about {est_minutes} min)"
+                    if not two_stems and est_minutes
+                    else "Separating vocals from instrumental... (1-3 min)"
+                    if two_stems
+                    else "Separating stems... (1-3 min)"
+                )
+                with st.spinner(spinner_msg):
+                    result, error = _run_separation_sync(
+                        str(input_path), str(SEPARATED_DIR), model, two_stems
                     )
+                if error:
+                    st.error(f"Separation failed: {error}")
+                    st.stop()
+                else:
+                    if mode == MODE_KARAOKE:
+                        st.session_state.instrumental_path = result
+                    else:
+                        st.session_state.stems_paths = result
             else:
-                with st.spinner(f"Separating stems... ({eta})"):
-                    st.session_state.stems_paths = separate_stems(
-                        str(input_path), str(SEPARATED_DIR), model
-                    )
+                # Async execution with progress tracking (production)
+                # Create fresh progress tracker
+                st.session_state.progress_tracker = ProgressTracker()
+                purge_progress_state()  # Clear old progress keys
+                st.session_state.progress_tracker = ProgressTracker()
+
+                # Advisory: an estimate from a laptop GPU, so word it as one.
+                eta = f"about {est_minutes} min" if est_minutes else "1-3 min"
+
+                # Start separation in background thread
+                two_stems = (mode == MODE_KARAOKE)
+                tracker = st.session_state.progress_tracker
+                thread = threading.Thread(
+                    target=_run_separation_async,
+                    args=(str(input_path), str(SEPARATED_DIR), model, two_stems, tracker),
+                    daemon=True,
+                )
+                st.session_state.progress_thread = thread
+                thread.start()
+
+                # Force rerun to show progress UI
+                _safe_rerun()
+
         except RuntimeError as exc:
             st.error(f"Separation failed: {exc}")
             st.stop()
@@ -203,7 +385,8 @@ def main() -> None:
             st.error(f"Unexpected error: {exc}")
             st.stop()
 
-    if st.session_state.get("mode") == MODE_STEMS:
+    # Show results if separation completed
+    if mode == MODE_STEMS:
         _render_stems()
         return
 
