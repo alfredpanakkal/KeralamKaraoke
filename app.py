@@ -52,6 +52,7 @@ SONG_KEYS = (
     "instrumental_path",
     "stems_paths",
     "paths",
+    "staged_stem_urls",
 )
 
 # Progress tracking keys
@@ -105,6 +106,28 @@ def _cached_bytes(path: Path) -> bytes:
     data = path.read_bytes()
     st.session_state[key] = (mtime, data)
     return data
+
+
+def _stage_stems_static(stems_paths: dict[str, str], song_name: str) -> dict[str, str]:
+    """
+    Copy stem WAVs to static/stems/<song>/ for HTTP serving (via enableStaticServing).
+    Returns {stem: url_path}. Clears previous song's folder to avoid stale files.
+    """
+    static_root = ROOT / "static" / "stems"
+    # Clear entire static/stems to avoid accumulating old songs
+    if static_root.exists():
+        shutil.rmtree(static_root, ignore_errors=True)
+    static_root.mkdir(parents=True, exist_ok=True)
+
+    song_dir = static_root / song_name
+    song_dir.mkdir(parents=True, exist_ok=True)
+
+    urls = {}
+    for stem, src_path in stems_paths.items():
+        dest = song_dir / f"{stem}.wav"
+        shutil.copy2(src_path, dest)
+        urls[stem] = f"/app/static/stems/{song_name}/{stem}.wav"
+    return urls
 
 
 def _run_separation_sync(
@@ -201,18 +224,21 @@ def main() -> None:
     for folder in (UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR):
         folder.mkdir(parents=True, exist_ok=True)
 
+    STATIC_STEMS_DIR = ROOT / "static" / "stems"
+    STATIC_STEMS_DIR.mkdir(parents=True, exist_ok=True)
+
     # Sidebar: storage actions (destructive, so tucked away)
     with st.sidebar:
         st.header("Storage", icon=":material/storage:")
         with st.expander("Advanced", icon=":material/tune:"):
             st.caption(
-                "Deletes everything in uploads, karaoke_out, separated, and "
-                "karaoke_cache, including the copy the app made of your upload. "
+                "Deletes everything in uploads, karaoke_out, separated, karaoke_cache, "
+                "and static/stems, including the copy the app made of your upload. "
                 "Your original file is not touched."
             )
             if st.button("Clear generated files", icon=":material/delete_forever:"):
                 deleted, failures = clear_generated_files(
-[UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR]
+                    [UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR, STATIC_STEMS_DIR]
                 )
                 purge_song_state()
                 purge_progress_state()
@@ -421,15 +447,8 @@ def main() -> None:
         )
 
 
-def _render_mixer(stems_paths: dict[str, str], song_name: str) -> None:
-    """Render a live Web Audio API mixer for the 4 stems."""
-    # Encode each stem as base64 for embedding in the HTML
-    stem_data = {}
-    for stem in STEMS:
-        path = Path(stems_paths[stem])
-        b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-        stem_data[stem] = f"data:audio/wav;base64,{b64}"
-
+def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
+    """Render a live Web Audio API mixer for the 4 stems using HTTP-served URLs."""
     # Unique component key to avoid collisions on reruns
     key = f"mixer_{song_name}"
 
@@ -480,7 +499,7 @@ def _render_mixer(stems_paths: dict[str, str], song_name: str) -> None:
         (function() {{
           const KEY = "{key}";
           const STEMS = {list(STEMS)};
-          const STEM_DATA = {stem_data};
+          const STEM_DATA = {stem_urls};
 
           // Audio context and nodes
           let audioCtx = null;
@@ -750,18 +769,25 @@ def _render_stems() -> None:
     song_name = st.session_state.song_name
     st.success("Done! Stems ready below.")
 
-    _render_mixer(stems_paths, song_name)
+    # Stage stems to static dir once per song for HTTP serving
+    if "staged_stem_urls" not in st.session_state:
+        st.session_state.staged_stem_urls = _stage_stems_static(stems_paths, song_name)
+    stem_urls = st.session_state.staged_stem_urls
+
+    _render_mixer(stem_urls, song_name)
 
     for stem in STEMS:
         path = Path(stems_paths[stem])
         st.subheader(stem.capitalize())
         st.audio(str(path))
-        st.download_button(
-            label=f"Download {stem}",
-            data=_cached_bytes(path),
-            file_name=f"{song_name}_{stem}.wav",
-            mime="audio/wav",
-            key=f"dl_{stem}",
+        # Use markdown anchor with download attribute (same-origin, forces download)
+        url = stem_urls[stem]
+        st.markdown(
+            f'<a href="{url}" download="{song_name}_{stem}.wav" '
+            f'style="display:inline-block;padding:6px 16px;background:#28a745;color:white;'
+            f'text-decoration:none;border-radius:4px;font-size:0.9rem;">'
+            f'Download {stem}</a>',
+            unsafe_allow_html=True,
         )
 
 

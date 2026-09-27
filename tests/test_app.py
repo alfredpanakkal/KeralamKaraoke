@@ -223,6 +223,13 @@ class FakeStreamlit:
     def download_button(self, label, **kwargs):
         self.events.append(f"download:{label}")
 
+    def markdown(self, body, unsafe_allow_html=False, **kwargs):
+        # Extract link text from the anchor tag for event recording
+        import re
+        match = re.search(r'<a [^>]*>([^<]+)</a>', body)
+        if match:
+            self.events.append(f"markdown:{match.group(1)}")
+
     def subheader(self, text, **kwargs):
         self.events.append(f"subheader:{text}")
 
@@ -651,8 +658,10 @@ def test_the_chosen_model_reaches_the_stems_runner(monkeypatch, tmp_path):
     assert fake.session_state["paths"]["instrumental"] == str(
         roots["separated"] / "htdemucs_ft" / "My_Song_no_vocals.wav"
     )
-    assert [e for e in fake.events if e.startswith("download:Download ")] == [
-        f"download:Download {stem}" for stem in STEMS
+    # Stems mode now uses markdown anchors with download attribute instead of
+    # download_button (to avoid MessageSizeError). Verify the download links render.
+    assert [e for e in fake.events if e.startswith("markdown:Download ")] == [
+        f"markdown:Download {stem}" for stem in STEMS
     ]
 
 
