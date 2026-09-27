@@ -317,8 +317,11 @@ def main() -> None:
             _safe_rerun()
         return
 
-    if "progress_result" in st.session_state:
-        pass
+    # A finished separator leaves its outcome in session state; errors must be
+    # surfaced here, otherwise a failed run silently resets to the idle UI and
+    # looks like the app did nothing.
+    if progress_error := st.session_state.pop("progress_error", None):
+        st.error(f"Separation failed: {progress_error}")
 
     cta_label = "Create karaoke track" if mode == MODE_KARAOKE else "Split into stems"
     if st.button(cta_label, icon=":material/music_note:", type="primary", width="stretch"):

@@ -130,8 +130,9 @@ def _make_progress_callback(tracker: ProgressTracker, total_segments: int):
             total_units = models * 1 * segments_per_model
             percent = min(100.0, (current_unit / total_units) * 100)
 
-            eta = tracker.get_eta()
-            tracker.update(percent=percent, eta_seconds=eta)
+            # Update percent first; get_eta() bases its estimate on it.
+            tracker.update(percent=percent)
+            tracker.update(eta_seconds=tracker.get_eta())
 
         except Exception:
             # Don't let callback errors break separation
@@ -188,11 +189,15 @@ def _run_demucs_python_api(
             output_path = Path(paths["instrumental"])
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Save using torchaudio
-            import torchaudio
+            # Save with soundfile (already a dependency; torchaudio is not).
+            # Tensors are (channels, samples); soundfile wants (samples, channels).
+            import soundfile as sf
 
-            torchaudio.save(
-                str(output_path), instrumental.cpu(), separator.samplerate, bits_per_sample=16
+            sf.write(
+                str(output_path),
+                instrumental.cpu().numpy().T,
+                separator.samplerate,
+                subtype="PCM_16",
             )
 
             if progress_tracker:
@@ -206,13 +211,16 @@ def _run_demucs_python_api(
             out_dir = Path(separated_dir) / model
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            import torchaudio
+            import soundfile as sf
 
             stem_paths = {}
             for stem_name in STEMS:
                 out_path = out_dir / f"{song_name}_{stem_name}.wav"
-                torchaudio.save(
-                    str(out_path), stems[stem_name].cpu(), separator.samplerate, bits_per_sample=16
+                sf.write(
+                    str(out_path),
+                    stems[stem_name].cpu().numpy().T,
+                    separator.samplerate,
+                    subtype="PCM_16",
                 )
                 stem_paths[stem_name] = str(out_path)
 
