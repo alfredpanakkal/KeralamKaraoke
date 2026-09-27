@@ -28,5 +28,9 @@ tests/*.wav
 # IDE
 .vscode/
 .idea/
+
+# Local agent tooling
+.agents/
+.claude/
 # Streamlit server logs
 streamlit*.log
