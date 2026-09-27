@@ -289,7 +289,18 @@ def main() -> None:
         st.session_state.progress_tracker = ProgressTracker()
 
     # Check if we have a running separation thread (async mode)
-    if "progress_thread" in st.session_state and st.session_state.progress_thread.is_alive():
+    # A finished thread may exit before the next poll, so also enter when the
+    # tracker is done but its result has not been consumed yet. The thread key
+    # is popped (not nulled) on completion so a later rerun never calls
+    # None.is_alive().
+    _thread = st.session_state.get("progress_thread")
+    _thread_alive = _thread is not None and _thread.is_alive()
+    _tracker_done_unconsumed = (
+        st.session_state.progress_tracker.get().get("done")
+        and "progress_result" not in st.session_state
+        and "progress_error" not in st.session_state
+    )
+    if _thread_alive or _tracker_done_unconsumed:
         # Separation in progress - show progress UI
         done, error, result = _render_progress_ui(st.session_state.progress_tracker, mode)
         if done:
@@ -302,7 +313,7 @@ def main() -> None:
                     st.session_state.instrumental_path = result
                 else:
                     st.session_state.stems_paths = result
-            st.session_state.progress_thread = None
+            st.session_state.pop("progress_thread", None)
             _safe_rerun()
         else:
             # Still running - auto-refresh every 500ms
