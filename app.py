@@ -147,15 +147,11 @@ def _run_separation_async(
 
 def _render_progress_ui(tracker: ProgressTracker, mode: str) -> tuple[bool, str | None, any]:
     """
-    Render progress UI and check if separation is complete.
+    Render progress UI inside a status container and check if separation is complete.
     Returns (is_done, error, result)
     """
     data = tracker.get()
 
-    # Progress bar
-    progress_bar = st.progress(data["percent"] / 100.0)
-
-    # Status text
     status_parts = []
     if data["total_models"] > 1:
         status_parts.append(f"Model {data['current_model']}/{data['total_models']}")
@@ -164,25 +160,28 @@ def _render_progress_ui(tracker: ProgressTracker, mode: str) -> tuple[bool, str 
     status_parts.append(data["status"].capitalize())
 
     status_text = " • ".join(status_parts)
-    st.caption(status_text)
 
-    # ETA
+    eta_text = ""
     if data["eta_seconds"] is not None and data["eta_seconds"] > 1:
         eta_min = int(data["eta_seconds"] // 60)
         eta_sec = int(data["eta_seconds"] % 60)
         if eta_min > 0:
-            st.caption(f"⏱️ ETA: ~{eta_min}m {eta_sec}s")
+            eta_text = f"  ETA ~{eta_min}m {eta_sec}s"
         else:
-            st.caption(f"⏱️ ETA: ~{eta_sec}s")
+            eta_text = f"  ETA ~{eta_sec}s"
 
-    # Check completion
-    if data["done"]:
-        progress_bar.progress(1.0)
-        if data["error"]:
-            st.error(f"Separation failed: {data['error']}")
-            return True, data["error"], None
-        else:
-            st.success("Separation complete!")
+    # Use st.status for a collapsible progress block
+    # Note: we create the status container on each rerun, but that's fine —
+    # Streamlit manages its state via the widget key internally.
+    with st.status(f"Separating…{eta_text}", expanded=True) as status:
+        st.progress(data["percent"] / 100.0)
+        st.caption(status_text)
+
+        if data["done"]:
+            status.update(label="Separation complete", state="complete")
+            if data["error"]:
+                st.error(f"Separation failed: {data['error']}")
+                return True, data["error"], None
             return True, None, data["result"]
 
     return False, None, None
@@ -195,66 +194,74 @@ def _safe_rerun():
 
 
 def main() -> None:
-    st.set_page_config(page_title="Karaoke Maker", page_icon="🎤")
-    st.title("🎤 Karaoke Track Generator")
-    st.write("Upload a song, get an instrumental-only wav or individual stems back.")
+    st.set_page_config(page_title="HELM - Karaoke", page_icon=":material/graphic_eq:")
+    st.title("HELM — Karaoke", icon=":material/graphic_eq:")
+    st.caption("Upload a song. Get the karaoke track, or split it into stems.")
 
     for folder in (UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR):
         folder.mkdir(parents=True, exist_ok=True)
 
-    # Created above the uploader so a click is handled before the results
-    # below re-read a path this run has just deleted.
-    st.sidebar.caption(
-        "Deletes everything in uploads, karaoke_out, separated, and "
-        "karaoke_cache, including the copy the app made of your upload. "
-        "Your original file is not touched."
-    )
-    if st.sidebar.button("Clear generated files"):
-        deleted, failures = clear_generated_files(
-            [UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR]
-        )
-        # Purge before reporting: nothing below may read a deleted path.
-        purge_song_state()
-        purge_progress_state()
-        if failures:
-            more = f", and {len(failures) - 3} more" if len(failures) > 3 else ""
-            st.sidebar.warning(
-                f"Deleted {deleted} file(s), but {len(failures)} could not be "
-                f"deleted: {'; '.join(failures[:3])}{more}"
+    # Sidebar: storage actions (destructive, so tucked away)
+    with st.sidebar:
+        st.header("Storage", icon=":material/storage:")
+        with st.expander("Advanced", icon=":material/tune:"):
+            st.caption(
+                "Deletes everything in uploads, karaoke_out, separated, and "
+                "karaoke_cache, including the copy the app made of your upload. "
+                "Your original file is not touched."
             )
-        else:
-            st.sidebar.success(f"Deleted {deleted} file(s)")
+            if st.button("Clear generated files", icon=":material/delete_forever:"):
+                deleted, failures = clear_generated_files(
+[UPLOAD_DIR, OUTPUT_DIR, SEPARATED_DIR, CACHE_DIR]
+                )
+                purge_song_state()
+                purge_progress_state()
+                if failures:
+                    more = f", and {len(failures) - 3} more" if len(failures) > 3 else ""
+                    st.warning(
+                        f"Deleted {deleted} file(s), but {len(failures)} could not be "
+                        f"deleted: {'; '.join(failures[:3])}{more}"
+                    )
+                else:
+                    st.success(f"Deleted {deleted} file(s)")
 
-    uploaded = st.file_uploader("Choose a song file", type=["mp3", "wav"])
-    mode = st.radio(
-        "Separation mode",
-        options=[MODE_KARAOKE, MODE_STEMS],
-        horizontal=True,
-    )
-    model_label = st.selectbox(
-        "Demucs model",
-        list(MODEL_OPTIONS),
-        help=(
-            "The first run with any model downloads its weights. htdemucs_ft "
-            "runs four models instead of one, so it takes about four times as "
-            "long."
-        ),
-    )
-    model = MODEL_OPTIONS[model_label]
+        st.caption("Powered by Demucs · Meta AI")
 
-    if mode == MODE_KARAOKE:
-        semitones = st.slider(
-            "Pitch shift (semitones)",
-            min_value=-6,
-            max_value=6,
-            value=0,
-            help="0 = no change. Karaoke mode only. Positive = higher, negative = lower.",
+    # Main input flow
+    uploaded = st.file_uploader("Drop an mp3 or wav", type=["mp3", "wav"])
+
+    with st.container(border=True):
+        mode = st.segmented_control(
+            "Mode",
+            options=[MODE_KARAOKE, MODE_STEMS],
+            default=MODE_KARAOKE,
         )
-    else:
-        semitones = 0   # unused in stems mode, keep defined so later refs don't break
+
+        quality_label = st.selectbox(
+            "Quality",
+            ["Fast (htdemucs)", "Best (htdemucs_ft — 4× slower)"],
+            index=0,
+            help=(
+                "Fast uses htdemucs (single model). Best uses htdemucs_ft "
+                "(four models) for higher quality but takes roughly four times "
+                "as long."
+            ),
+        )
+        model = "htdemucs_ft" if "Best" in quality_label else "htdemucs"
+
+        if mode == MODE_KARAOKE:
+            semitones = st.slider(
+                "Pitch",
+                min_value=-6,
+                max_value=6,
+                value=0,
+                help="Semitones, -6 to +6. Karaoke mode only.",
+            )
+            st.caption("semitones, -6 to +6")
+        else:
+            semitones = 0
 
     if uploaded is None:
-        st.info("Upload a song to begin.")
         return
 
     ok, msg = validate_upload_size(uploaded.size)
@@ -262,8 +269,6 @@ def main() -> None:
         st.error(msg)
         return
 
-    # The upload itself, not a copy of it: an UploadedFile is an io.BytesIO, so
-    # the header read costs a seek and nothing else, on every rerun.
     facts = probe_audio(uploaded)
     est_minutes = estimate_minutes(facts["duration"]) if facts else None
     if facts is None:
@@ -284,15 +289,9 @@ def main() -> None:
     ):
         reset_song_state(uploaded.name, mode, model)
 
-    # Initialize progress tracker if not exists
     if "progress_tracker" not in st.session_state:
         st.session_state.progress_tracker = ProgressTracker()
 
-    # Check if we have a running separation thread (async mode)
-    # A finished thread may exit before the next poll, so also enter when the
-    # tracker is done but its result has not been consumed yet. The thread key
-    # is popped (not nulled) on completion so a later rerun never calls
-    # None.is_alive().
     _thread = st.session_state.get("progress_thread")
     _thread_alive = _thread is not None and _thread.is_alive()
     _tracker_done_unconsumed = (
@@ -301,10 +300,8 @@ def main() -> None:
         and "progress_error" not in st.session_state
     )
     if _thread_alive or _tracker_done_unconsumed:
-        # Separation in progress - show progress UI
         done, error, result = _render_progress_ui(st.session_state.progress_tracker, mode)
         if done:
-            # Separation complete - store result and clear thread
             if error:
                 st.session_state.progress_error = error
             else:
@@ -316,17 +313,15 @@ def main() -> None:
             st.session_state.pop("progress_thread", None)
             _safe_rerun()
         else:
-            # Still running - auto-refresh every 500ms
             time.sleep(0.5)
             _safe_rerun()
         return
 
-    # Check if we have a completed result from previous run
     if "progress_result" in st.session_state:
-        # Result already stored in session_state by the thread
         pass
 
-    if st.button("Generate", type="primary"):
+    cta_label = "Create karaoke track" if mode == MODE_KARAOKE else "Split into stems"
+    if st.button(cta_label, icon=":material/music_note:", type="primary", width="stretch"):
         try:
             safe_name = safe_upload_name(uploaded.name)
             input_path = UPLOAD_DIR / safe_name
@@ -338,11 +333,9 @@ def main() -> None:
                 song_name, BASE_DIRS, model=model
             )
 
-            # Check if we're in test environment (no st.rerun support)
             in_test_env = not hasattr(st, "rerun")
 
             if in_test_env:
-                # Synchronous execution for test compatibility
                 two_stems = (mode == MODE_KARAOKE)
                 spinner_msg = (
                     f"Separating vocals from instrumental... (about {est_minutes} min)"
@@ -366,16 +359,10 @@ def main() -> None:
                     else:
                         st.session_state.stems_paths = result
             else:
-                # Async execution with progress tracking (production)
-                # Create fresh progress tracker
                 st.session_state.progress_tracker = ProgressTracker()
-                purge_progress_state()  # Clear old progress keys
+                purge_progress_state()
                 st.session_state.progress_tracker = ProgressTracker()
 
-                # Advisory: an estimate from a laptop GPU, so word it as one.
-                eta = f"about {est_minutes} min" if est_minutes else "1-3 min"
-
-                # Start separation in background thread
                 two_stems = (mode == MODE_KARAOKE)
                 tracker = st.session_state.progress_tracker
                 thread = threading.Thread(
@@ -386,53 +373,49 @@ def main() -> None:
                 st.session_state.progress_thread = thread
                 thread.start()
 
-                # Force rerun to show progress UI
                 _safe_rerun()
 
         except RuntimeError as exc:
             st.error(f"Separation failed: {exc}")
             st.stop()
-        except Exception as exc:  # noqa: BLE001 - surface anything unexpected
-            st.error(f"Unexpected error: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Something went wrong: {exc}")
             st.stop()
 
-    # Show results if separation completed
     if mode == MODE_STEMS:
         _render_stems()
         return
 
     if "instrumental_path" not in st.session_state:
-        st.info("Click **Generate** to separate this song.")
+        st.info("Click **Create karaoke track** to separate this song.")
         return
 
     instrumental_path = st.session_state.instrumental_path
     paths = st.session_state.paths
     song_name = st.session_state.song_name
 
-    # Cached: only recomputed when this (song, semitones) pair is new.
     with st.spinner("Applying pitch shift..." if semitones else "Preparing track..."):
         shifted = pitch_shift_cached(instrumental_path, semitones, paths["cache_dir"])
         final = Path(paths["final"])
         final.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(shifted, final)
-        # The copy is already made, so evicting now cannot take away a file the
-        # render path still has to read. Top-level CACHE_DIR, not the per-song
-        # cache_dir: the limit is a budget for the whole cache, not for one song.
-        # Walking on every rerun is deliberate — a few hundred stat calls.
         freed = enforce_cache_limit(str(CACHE_DIR))
 
     if freed > 0:
         st.caption(f"Freed {freed / (1024 * 1024):.1f} MB from the pitch-shift cache.")
 
-    st.success("Done! Karaoke track ready below.")
-    st.audio(str(final))
+    st.toast("Track ready", icon=":material/check:")
 
-    st.download_button(
-        label="Download Karaoke Track",
-        data=_cached_bytes(final),
-        file_name=f"{song_name}_karaoke.wav",
-        mime="audio/wav",
-    )
+    with st.container(border=True):
+        st.subheader("Your track")
+        st.audio(str(final))
+        st.download_button(
+            label="Download karaoke track",
+            icon=":material/download:",
+            data=_cached_bytes(final),
+            file_name=f"{song_name}_karaoke.wav",
+            mime="audio/wav",
+        )
 
 
 def _render_mixer(stems_paths: dict[str, str], song_name: str) -> None:

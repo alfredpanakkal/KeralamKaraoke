@@ -72,6 +72,32 @@ class FakeUpload(io.BytesIO):
         raise AssertionError("getbuffer() is the Generate branch's, not the probe's")
 
 
+class _FakeStatus:
+    """Minimal stand-in for st.status context manager."""
+
+    def __init__(self, parent):
+        self.parent = parent
+
+    def update(self, label=None, state=None, expanded=None, **kwargs):
+        if label:
+            self.parent.events.append(f"status_update:{label}")
+        if state:
+            self.parent.events.append(f"status_state:{state}")
+
+
+class _FakeContainer:
+    """Minimal stand-in for st.container context manager."""
+
+    def __init__(self, parent):
+        self.parent = parent
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
 class FakeStreamlit:
     """The smallest Streamlit double that can drive app.main().
 
@@ -98,6 +124,12 @@ class FakeStreamlit:
         self.captions = []
         self.spinners = []
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
     def _report(self, level, text):
         # Snapshot the session at report time: the ordering test reads it.
         self.reports.append((level, text, dict(self.session_state)))
@@ -105,13 +137,13 @@ class FakeStreamlit:
     def set_page_config(self, **kwargs):
         pass
 
-    def title(self, text):
+    def title(self, text, **kwargs):
         pass
 
     def write(self, text):
         pass
 
-    def subheader(self, text):
+    def subheader(self, text, **kwargs):
         self.events.append(f"subheader:{text}")
 
     def caption(self, text):
@@ -143,14 +175,27 @@ class FakeStreamlit:
         self.events.append(f"selectbox:{label}")
         if self.model_label is not None:
             return self.model_label
+        # New quality labels: "Fast (htdemucs)" or "Best (htdemucs_ft — 4× slower)"
+        if "Fast" in str(options[0]):
+            return options[index]
         return options[index]
 
     def slider(self, label, min_value, max_value, value, help=None):
         return 0
 
+    def segmented_control(self, label, options, default=None, **kwargs):
+        self.events.append(f"segmented_control:{label}")
+        # Return the mode that was passed to the fake, mapping to the option
+        for opt in options:
+            if self.mode in opt:
+                return opt
+        if default is not None:
+            return default
+        return options[0]
+
     def button(self, label, **kwargs):
         self.events.append(f"button:{label}")
-        if label == "Generate":
+        if label in ("Generate", "Create karaoke track", "Split into stems"):
             return self.generate
         return label in self.clicked
 
@@ -160,11 +205,34 @@ class FakeStreamlit:
         self.spinners.append(text)
         yield
 
+    @contextmanager
+    def status(self, label, expanded=True, state="running", **kwargs):
+        self.events.append(f"status:{label}")
+        yield _FakeStatus(self)
+
+    def toast(self, text, icon=None, **kwargs):
+        self.events.append(f"toast:{text}")
+
+    def container(self, border=False, **kwargs):
+        self.events.append(f"container:border={border}")
+        return _FakeContainer(self)
+
     def audio(self, data):
         self.events.append("audio")
 
     def download_button(self, label, **kwargs):
         self.events.append(f"download:{label}")
+
+    def subheader(self, text, **kwargs):
+        self.events.append(f"subheader:{text}")
+
+    def header(self, text, **kwargs):
+        self.events.append(f"header:{text}")
+
+    @contextmanager
+    def expander(self, label, expanded=False, icon=None, **kwargs):
+        self.events.append(f"expander:{label}")
+        yield
 
 
 def test_import_app_runs_without_streamlit():
@@ -378,7 +446,7 @@ def test_runtime_dirs_are_anchored_to_app_dir():
         assert directory.name in {"uploads", "karaoke_out", "separated", "karaoke_cache"}
 
 
-FT_LABEL = "htdemucs_ft (best quality, roughly 4x slower)"
+FT_LABEL = "Best (htdemucs_ft — 4× slower)"
 
 
 def test_reset_song_state_replaces_previous_model(monkeypatch):
@@ -566,7 +634,7 @@ def test_the_chosen_model_reaches_demucs_and_the_output_paths(monkeypatch, tmp_p
     # read back as another's, and the whole karaoke render path ran for real.
     assert (roots["separated"] / "htdemucs_ft" / "no_vocals.wav").is_file()
     assert (roots["karaoke_out"] / "My_Song_karaoke.wav").is_file()
-    assert fake.events[-1] == "download:Download Karaoke Track"
+    assert fake.events[-1] == "download:Download karaoke track"
 
 
 def test_the_chosen_model_reaches_the_stems_runner(monkeypatch, tmp_path):
