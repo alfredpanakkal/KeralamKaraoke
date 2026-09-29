@@ -15,8 +15,13 @@ def _shift_audio(path: str, semitones: int) -> None:
     import librosa
     import soundfile as sf
 
-    audio, sr = librosa.load(path, sr=None)
-    sf.write(path, librosa.effects.pitch_shift(audio, sr=sr, n_steps=semitones), sr)
+    # mono=False: librosa.load downmixes to mono by default, which would
+    # silently collapse the stereo image in every cached shifted track.
+    audio, sr = librosa.load(path, sr=None, mono=False)
+    shifted = librosa.effects.pitch_shift(audio, sr=sr, n_steps=semitones)
+    # librosa returns (channels, samples) for stereo; soundfile wants
+    # (samples, channels).
+    sf.write(path, shifted.T if shifted.ndim > 1 else shifted, sr)
 
 
 def _cache_key(instrumental_path: str, semitones: int) -> str:

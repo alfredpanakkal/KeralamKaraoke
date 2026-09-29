@@ -90,3 +90,31 @@ def test_failed_shift_leaves_no_orphaned_tmp(tmp_path):
     with pytest.raises(ValueError, match="boom"):
         karaoke.pitch_shift.pitch_shift_cached(str(src), 2, cache, shifter=crash)
     assert list(Path(cache).glob("*")) == []
+
+
+def test_shift_audio_preserves_stereo(tmp_path, monkeypatch):
+    """librosa.load defaults to mono=True, which would silently collapse the
+    stereo image of every shifted track. mono=False is the fix, plus the
+    transpose, because librosa returns (channels, samples) while soundfile
+    writes (samples, channels).
+
+    librosa and soundfile are stubbed: asserting on the real filter chain
+    would need the full resampling stack for a wiring check.
+    """
+    import sys
+    from unittest.mock import MagicMock
+
+    fake_librosa = MagicMock()
+    stereo = np.arange(6, dtype=np.float32).reshape(2, 3)  # (channels, samples)
+    fake_librosa.load.return_value = (stereo.copy(), 22050)
+    fake_librosa.effects.pitch_shift.side_effect = lambda audio, sr, n_steps: audio
+    fake_sf = MagicMock()
+    monkeypatch.setitem(sys.modules, "librosa", fake_librosa)
+    monkeypatch.setitem(sys.modules, "soundfile", fake_sf)
+
+    karaoke.pitch_shift._shift_audio(str(tmp_path / "x.wav"), 2)
+
+    _, load_kwargs = fake_librosa.load.call_args
+    assert load_kwargs.get("mono") is False
+    written = fake_sf.write.call_args[0][1]
+    assert written.shape == (3, 2)  # back to (samples, channels) for soundfile

@@ -153,6 +153,27 @@ def test_safe_upload_name_strips_trailing_dots_and_caps_length():
     assert len(karaoke.core.safe_upload_name(long_name)) <= 104  # 100-stem cap + ext
 
 
+def test_safe_upload_name_all_dots_collapses_to_placeholder():
+    # Nothing usable survives the dot-stripping, so the name must fall back
+    # rather than come out empty.
+    assert karaoke.core.safe_upload_name("...") == "upload"
+
+
+def test_safe_upload_name_dotfile_keeps_the_name():
+    # ".hidden" is a dotfile without an extension, not a pure extension:
+    # splitext leaves it in the root, and the lstrip must not lose it.
+    assert karaoke.core.safe_upload_name(".hidden") == "hidden"
+
+
+def test_safe_upload_name_multiple_leading_dot_names():
+    # splitext treats a leading run of dots as part of the root (so "..mp3"
+    # has no extension); these must still be safe rather than empty or
+    # dot-prefixed.
+    for name in ("....mp3", "..mp3"):
+        safe = karaoke.core.safe_upload_name(name)
+        assert safe and not safe.startswith(".")
+
+
 def test_upload_too_large_is_rejected():
     limit = 150 * 1024 * 1024
     ok, msg = karaoke.core.validate_upload_size(limit + 1)

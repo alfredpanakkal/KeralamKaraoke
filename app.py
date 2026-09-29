@@ -1,6 +1,9 @@
 """Streamlit UI for the Karaoke Track Generator."""
 
 import base64
+import html as html_module
+import json
+import re
 import shutil
 import threading
 import time
@@ -111,15 +114,14 @@ def _cached_bytes(path: Path) -> bytes:
 def _stage_stems_static(stems_paths: dict[str, str], song_name: str) -> dict[str, str]:
     """
     Copy stem WAVs to static/stems/<song>/ for HTTP serving (via enableStaticServing).
-    Returns {stem: url_path}. Clears previous song's folder to avoid stale files.
+    Returns {stem: url_path}. Only this song's folder is replaced: another
+    tab or session may still be playing a different song's stems from here,
+    and wiping the whole root would 404 those mid-playback.
     """
     static_root = ROOT / "static" / "stems"
-    # Clear entire static/stems to avoid accumulating old songs
-    if static_root.exists():
-        shutil.rmtree(static_root, ignore_errors=True)
-    static_root.mkdir(parents=True, exist_ok=True)
-
     song_dir = static_root / song_name
+    if song_dir.exists():
+        shutil.rmtree(song_dir, ignore_errors=True)
     song_dir.mkdir(parents=True, exist_ok=True)
 
     urls = {}
@@ -388,7 +390,8 @@ def main() -> None:
                     else:
                         st.session_state.stems_paths = result
             else:
-                st.session_state.progress_tracker = ProgressTracker()
+                # Purge first: it deletes progress_tracker itself, so an
+                # assignment before it would be dead.
                 purge_progress_state()
                 st.session_state.progress_tracker = ProgressTracker()
 
@@ -449,8 +452,10 @@ def main() -> None:
 
 def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
     """Render a live Web Audio API mixer for the 4 stems using HTTP-served URLs."""
-    # Unique component key to avoid collisions on reruns
-    key = f"mixer_{song_name}"
+    # Unique component key to avoid collisions on reruns. Restricted to
+    # characters valid in element ids and JS so a song named "it's" cannot
+    # break the markup.
+    key = "mixer_" + re.sub(r"[^0-9A-Za-z_-]", "_", song_name)
 
     html = f"""
     <div id="{key}" style="font-family: system-ui, sans-serif;">
@@ -505,20 +510,29 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
         import {{ PitchShifter }} from '/app/static/soundtouchjs/soundtouch.min.js';
 
         (function() {{
-          const KEY = "{key}";
-          const STEMS = {list(STEMS)};
-          const STEM_DATA = {stem_urls};
+          const KEY = {json.dumps(key)};
+          // json.dumps, not str(): a song name with an apostrophe would
+          // otherwise terminate a Python-repr single-quoted string.
+          const SONG_NAME = {json.dumps(song_name)};
+          const STEMS = {json.dumps(list(STEMS))};
+          const STEM_DATA = {json.dumps(stem_urls)};
 
           // Audio context and nodes
           let audioCtx = null;
           let buffers = {{}};
-          let sources = {{}};
-          let gainNodes = {{}};
           let masterGain = null;
           let startTime = 0;
           let pauseTime = 0;
           let isPlaying = false;
           let loadedCount = 0;
+
+          // Pitch-shift state. The stems are summed into one buffer and that
+          // buffer is what PitchShifter plays, because PitchShifter reads from
+          // a buffer rather than from an upstream node.
+          let mixedBuffer = null;
+          let currentPitchSemitones = 0;
+          let pitchShifter = null;
+          let playbackSource = null;
 
           const statusEl = document.getElementById(KEY + "_status");
           const playBtn = document.getElementById(KEY + "_play");
@@ -527,6 +541,8 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
           const downloadBtn = document.getElementById(KEY + "_download");
           const masterSlider = document.getElementById(KEY + "_master");
           const masterVal = document.getElementById(KEY + "_master_val");
+          const pitchSlider = document.getElementById(KEY + "_pitch");
+          const pitchVal = document.getElementById(KEY + "_pitch_val");
           const stemsContainer = document.getElementById(KEY + "_stems");
 
           // Create stem rows
@@ -558,6 +574,7 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
             stopBtn.disabled = !enable || !isPlaying;
             downloadBtn.disabled = !enable;
             masterSlider.disabled = !enable;
+            pitchSlider.disabled = !enable;
             STEMS.forEach(stem => stemSliders[stem].disabled = !enable);
           }}
 
@@ -622,6 +639,11 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
               }}));
 
               updateStatus(`Ready — ${{formatTime(buffers[STEMS[0]].duration)}}`);
+              // Build the sum up front so the first Play is instant.
+              mixedBuffer = rebuildMixedBuffer();
+              currentPitchSemitones = 0;
+              pitchSlider.value = "0";
+              pitchVal.textContent = "0 st";
               enableUI(true);
             }} catch (err) {{
               updateStatus("Error loading audio: " + err.message);
@@ -629,24 +651,47 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
             }}
           }}
 
-          function createSource(stem) {{
-            const src = audioCtx.createBufferSource();
-            src.buffer = buffers[stem];
-            const gain = audioCtx.createGain();
-            gain.gain.value = stemSliders[stem].value / 100;
-            src.connect(gain);
-            gain.connect(masterGain);
-            sources[stem] = src;
-            gainNodes[stem] = gain;
-            return src;
+          function disposePlayback() {{
+            if (playbackSource) {{
+              try {{ playbackSource.stop(0); }} catch (e) {{ /* already stopped */ }}
+              try {{ playbackSource.disconnect(); }} catch (e) {{ /* not connected */ }}
+              playbackSource = null;
+            }}
+            if (pitchShifter) {{
+              try {{ pitchShifter.disconnect(); }} catch (e) {{ /* not connected */ }}
+              pitchShifter = null;
+            }}
           }}
 
-          function startAll(offset = 0) {{
+          function startPlayback(offset = 0) {{
             if (isPlaying) return;
-            STEMS.forEach(stem => {{
-              const src = createSource(stem);
-              src.start(0, offset);
-            }});
+            if (!mixedBuffer) mixedBuffer = rebuildMixedBuffer();
+            if (!mixedBuffer) return;
+
+            if (currentPitchSemitones !== 0) {{
+              // Master gain is already baked into the sum, so the gain node is
+              // a unity passthrough on this path.
+              try {{
+                pitchShifter = new PitchShifter(audioCtx, mixedBuffer, 4096, onPlaybackEnded);
+                pitchShifter.pitchSemitones = currentPitchSemitones;
+                pitchShifter.connect(masterGain);
+                pitchShifter.percentagePlayed = (offset / mixedBuffer.duration) * 100;
+              }} catch (err) {{
+                console.warn("PitchShifter failed, playing unshifted", err);
+                pitchShifter = null;
+              }}
+            }}
+
+            if (!pitchShifter) {{
+              // 0 semitones needs no shifting, so stay off the deprecated
+              // ScriptProcessorNode that PitchShifter is built on.
+              playbackSource = audioCtx.createBufferSource();
+              playbackSource.buffer = mixedBuffer;
+              playbackSource.connect(masterGain);
+              playbackSource.start(0, offset);
+            }}
+            masterGain.gain.value = 1;
+
             startTime = audioCtx.currentTime - offset;
             isPlaying = true;
             playBtn.disabled = true;
@@ -655,38 +700,45 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
             updateStatus("Playing…");
           }}
 
-          function pauseAll() {{
+          function pausePlayback() {{
             if (!isPlaying) return;
             pauseTime = audioCtx.currentTime - startTime;
-            STEMS.forEach(stem => {{
-              if (sources[stem]) sources[stem].stop(0);
-            }});
+            // A ScriptProcessorNode cannot be stopped and resumed mid-stream
+            // without losing its filter state, so freeze the whole context.
+            audioCtx.suspend();
             isPlaying = false;
             playBtn.disabled = false;
             pauseBtn.disabled = true;
             updateStatus(`Paused at ${{formatTime(pauseTime)}}`);
           }}
 
-          function stopAll() {{
-            STEMS.forEach(stem => {{
-              if (sources[stem]) sources[stem].stop(0);
-            }});
+          function stopPlayback() {{
+            disposePlayback();
+            if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
             isPlaying = false;
             pauseTime = 0;
             startTime = 0;
             playBtn.disabled = false;
             pauseBtn.disabled = true;
             stopBtn.disabled = true;
-            updateStatus(`Ready — ${{formatTime(buffers[STEMS[0]]?.duration || 0)}}`);
+            updateStatus(mixedBuffer
+              ? `Ready — ${{formatTime(mixedBuffer.duration)}}`
+              : "Ready");
+          }}
+
+          function onPlaybackEnded() {{
+            stopPlayback();
           }}
 
           function updateGains() {{
-            if (masterGain) masterGain.gain.value = masterSlider.value / 100;
+            // Levels are baked into the summed buffer, not applied by live gain
+            // nodes, so invalidate it and let the next play rebuild it.
+            // Re-summing per input tick would jank the UI on a long song.
             masterVal.textContent = masterSlider.value + "%";
             STEMS.forEach(stem => {{
-              if (gainNodes[stem]) gainNodes[stem].gain.value = stemSliders[stem].value / 100;
               stemVals[stem].textContent = stemSliders[stem].value + "%";
             }});
+            mixedBuffer = null;
           }}
 
           // Download mix using OfflineAudioContext
@@ -697,7 +749,8 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
 
             try {{
               const duration = buffers[STEMS[0]].duration;
-              const offlineCtx = new OfflineAudioContext(2, duration * offlineCtx.sampleRate, offlineCtx.sampleRate);
+              const sampleRate = audioCtx.sampleRate;
+              const offlineCtx = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
               const offlineMaster = offlineCtx.createGain();
               offlineMaster.connect(offlineCtx.destination);
               offlineMaster.gain.value = masterSlider.value / 100;
@@ -720,7 +773,7 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
               const url = URL.createObjectURL(blob);
               const a = document.createElement("a");
               a.href = url;
-              a.download = "{song_name}_mix.wav";
+              a.download = SONG_NAME + "_mix.wav";
               a.click();
               URL.revokeObjectURL(url);
 
@@ -784,10 +837,27 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
           masterSlider.addEventListener("input", updateGains);
           STEMS.forEach(stem => stemSliders[stem].addEventListener("input", updateGains));
 
-          playBtn.addEventListener("click", () => startAll(pauseTime));
-          pauseBtn.addEventListener("click", pauseAll);
-          stopBtn.addEventListener("click", stopAll);
+          playBtn.addEventListener("click", () => {{
+            if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+            startPlayback(pauseTime);
+          }});
+          pauseBtn.addEventListener("click", pausePlayback);
+          stopBtn.addEventListener("click", stopPlayback);
           downloadBtn.addEventListener("click", downloadMix);
+
+          // 'change' fires on release rather than on every tick of a drag.
+          // Re-shifting per tick would tear down and rebuild the shifter
+          // mid-drag and stutter badly.
+          pitchSlider.addEventListener("change", () => {{
+            currentPitchSemitones = parseInt(pitchSlider.value, 10);
+            pitchVal.textContent = (currentPitchSemitones > 0 ? "+" : "") +
+                                   currentPitchSemitones + " st";
+            if (!isPlaying) return;
+            // Carry on from where we were rather than snapping to the top.
+            const offset = audioCtx.currentTime - startTime;
+            pausePlayback();
+            startPlayback(offset);
+          }});
 
           // Handle audio context suspension (browser autoplay policy)
           document.addEventListener("click", () => {{
@@ -809,14 +879,18 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
 def _render_stems() -> None:
     stems_paths = st.session_state.get("stems_paths")
     if not stems_paths:
-        st.info("Click **Generate** to separate this song into stems.")
+        st.info("Click **Split into stems** to separate this song into stems.")
         return
 
     song_name = st.session_state.song_name
     st.success("Done! Stems ready below.")
 
-    # Stage stems to static dir once per song for HTTP serving
-    if "staged_stem_urls" not in st.session_state:
+    # Stage stems to static dir once per song for HTTP serving. Re-stage if
+    # the files vanished behind the session's back (e.g. "Clear generated
+    # files" in another tab), otherwise the mixer fetches dead URLs.
+    staged_dir = ROOT / "static" / "stems" / song_name
+    staged_ok = all((staged_dir / f"{stem}.wav").is_file() for stem in STEMS)
+    if "staged_stem_urls" not in st.session_state or not staged_ok:
         st.session_state.staged_stem_urls = _stage_stems_static(stems_paths, song_name)
     stem_urls = st.session_state.staged_stem_urls
 
@@ -826,10 +900,14 @@ def _render_stems() -> None:
         path = Path(stems_paths[stem])
         st.subheader(stem.capitalize())
         st.audio(str(path))
-        # Use markdown anchor with download attribute (same-origin, forces download)
-        url = stem_urls[stem]
+        # Use markdown anchor with download attribute (same-origin, forces
+        # download). Both interpolations go through html.escape: a song name
+        # containing an apostrophe or quote would otherwise break the
+        # attribute and enable markup injection.
+        url = html_module.escape(stem_urls[stem], quote=True)
+        file_name = html_module.escape(f"{song_name}_{stem}.wav", quote=True)
         st.markdown(
-            f'<a href="{url}" download="{song_name}_{stem}.wav" '
+            f'<a href="{url}" download="{file_name}" '
             f'style="display:inline-block;padding:6px 16px;background:#28a745;color:white;'
             f'text-decoration:none;border-radius:4px;font-size:0.9rem;">'
             f'Download {stem}</a>',

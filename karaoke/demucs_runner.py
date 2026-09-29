@@ -118,16 +118,16 @@ def _make_progress_callback(tracker: ProgressTracker, total_segments: int):
                     status="separating",
                 )
 
-            # Calculate overall percentage
-            # Work units = models * shifts * segments_per_model
-            # Current unit = model_idx * shifts * segments + shift_idx * segments + segment_idx
+            # Calculate overall percentage.
+            # Work units = models * segments_per_model. Shifts are always 1
+            # for htdemucs, so shift_idx adds no extra unit — including it
+            # would double-count work whenever shift_idx > 0.
             segments_per_model = total_segments_calc
             current_unit = (
-                model_idx * 1 * segments_per_model
-                + shift_idx * 1 * segments_per_model
+                model_idx * segments_per_model
                 + min(math.ceil(segment_offset / segment_size), segments_per_model)
             )
-            total_units = models * 1 * segments_per_model
+            total_units = models * segments_per_model
             percent = min(100.0, (current_unit / total_units) * 100)
 
             # Update percent first; get_eta() bases its estimate on it.
@@ -348,6 +348,16 @@ def separate_stems(
         # Result is already stored in progress_tracker by _run_demucs_python_api
         result = progress_tracker.get().get("result")
         if result:
+            # Still validate: a partial write (e.g. disk full on the last
+            # stem) must not pass an incomplete dict down to the renderer.
+            missing = [
+                stem for stem in STEMS
+                if stem not in result or not Path(result[stem]).exists()
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"Demucs reported success but stems are missing: {', '.join(missing)}"
+                )
             return result
         # Fallback: check filesystem
         track = Path(input_path).stem

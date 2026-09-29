@@ -123,6 +123,8 @@ class FakeStreamlit:
         # in the copy itself.
         self.captions = []
         self.spinners = []
+        self.infos = []
+        self.markdowns = []  # raw bodies, for asserting on escaping
 
     def __enter__(self):
         return self
@@ -150,7 +152,7 @@ class FakeStreamlit:
         self.captions.append(text)
 
     def info(self, text):
-        pass
+        self.infos.append(text)
 
     def success(self, text):
         self._report("success", text)
@@ -224,6 +226,7 @@ class FakeStreamlit:
         self.events.append(f"download:{label}")
 
     def markdown(self, body, unsafe_allow_html=False, **kwargs):
+        self.markdowns.append(body)
         # Extract link text from the anchor tag for event recording
         import re
         match = re.search(r'<a [^>]*>([^<]+)</a>', body)
@@ -281,6 +284,78 @@ def test_restaging_refreshes_static_file_validators(monkeypatch, tmp_path):
     second_mtime = dest.stat().st_mtime_ns
 
     assert second_mtime != first_mtime
+
+
+def test_staging_keeps_other_songs_folders(monkeypatch, tmp_path):
+    """Re-staging a song must not wipe another song's staged stems.
+
+    A second tab or browser session may still be playing the previous song
+    from static/stems; deleting the whole root 404s it mid-playback.
+    """
+    import app
+
+    monkeypatch.setattr(app, "ROOT", tmp_path)
+    stems_paths = {}
+    for stem in ("vocals", "drums", "bass", "other"):
+        src = tmp_path / f"{stem}.wav"
+        src.write_bytes(b"RIFF")
+        stems_paths[stem] = str(src)
+
+    app._stage_stems_static(stems_paths, "SongA")
+    app._stage_stems_static(stems_paths, "SongB")
+
+    # The first song's stems survived the second staging...
+    assert (tmp_path / "static" / "stems" / "SongA" / "vocals.wav").is_file()
+    assert (tmp_path / "static" / "stems" / "SongB" / "vocals.wav").is_file()
+
+    # ...while re-staging the same song still replaces its own folder.
+    (tmp_path / "static" / "stems" / "SongA" / "stale.txt").write_bytes(b"x")
+    app._stage_stems_static(stems_paths, "SongA")
+    assert not (tmp_path / "static" / "stems" / "SongA" / "stale.txt").exists()
+
+
+def test_stems_hint_names_the_split_button(monkeypatch):
+    """The empty-state hint must match the button's real label.
+
+    Break it catches: reintroducing 'Click **Generate**', a label that no
+    longer exists on the page, from the pre-stems-mode copy.
+    """
+    import app
+
+    state = FakeSessionState({"song_name": "My_Song"})
+    fake = FakeStreamlit(state, uploaded=None, mode=app.MODE_STEMS)
+    monkeypatch.setattr(app, "st", fake)
+    app._render_stems()
+
+    assert fake.infos == ["Click **Split into stems** to separate this song into stems."]
+
+
+def test_stems_download_links_escape_the_song_name(monkeypatch, tmp_path):
+    """The per-stem anchors interpolate song_name into a quoted HTML
+    attribute; an apostrophe must not break out of it."""
+    from unittest.mock import patch
+
+    import app
+    from karaoke.core import STEMS
+
+    monkeypatch.setattr(app, "ROOT", tmp_path)
+    stems_paths = {}
+    for stem in STEMS:
+        src = tmp_path / f"{stem}.wav"
+        src.write_bytes(b"RIFF")
+        stems_paths[stem] = str(src)
+
+    state = FakeSessionState({"song_name": "it's", "stems_paths": stems_paths})
+    fake = FakeStreamlit(state, uploaded=None, mode=app.MODE_STEMS)
+    monkeypatch.setattr(app, "st", fake)
+    with patch("streamlit.components.v1.html"):
+        app._render_stems()
+
+    anchors = [body for body in fake.markdowns if "download=" in body]
+    assert len(anchors) == len(STEMS)
+    for anchor in anchors:
+        assert "it&#x27;s" in anchor
+        assert "it's" not in anchor
 
 
 def test_cached_bytes_rereads_on_mtime_change(tmp_path, monkeypatch):
@@ -815,3 +890,58 @@ def test_mixer_clamps_the_sum_to_avoid_clipping(monkeypatch):
     body = html[html.index("function rebuildMixedBuffer") :]
     body = body[: body.index("return mixed")]
     assert "clamp" in body.lower() or ("1;" in body and "-1;" in body)
+
+
+def test_mixer_applies_pitch_via_pitchshifter(monkeypatch):
+    html = _rendered_mixer_html(monkeypatch)
+
+    assert "new PitchShifter" in html
+    assert ".pitchSemitones" in html
+    # Constructor order is (context, buffer, bufferSize, onEnd). Passing onEnd
+    # third would set bufferSize to a function and break playback silently.
+    assert "new PitchShifter(audioCtx, mixedBuffer, 4096" in html
+
+
+def test_mixer_sums_before_it_shifts(monkeypatch):
+    """The sum must be built before the shifter consumes it."""
+    html = _rendered_mixer_html(monkeypatch)
+
+    assert html.index("function rebuildMixedBuffer") < html.index("new PitchShifter")
+
+
+def test_mixer_zero_pitch_skips_the_shifter(monkeypatch):
+    """A 0-semitone shift is a no-op.
+
+    Taking the plain source path keeps the default state off the deprecated
+    ScriptProcessorNode that PitchShifter is built on.
+    """
+    html = _rendered_mixer_html(monkeypatch)
+
+    assert "currentPitchSemitones !== 0" in html
+    assert "createBufferSource" in html
+
+
+def test_mixer_keeps_existing_transport_controls(monkeypatch):
+    """The pitch feature must not cost the user any existing control."""
+    html = _rendered_mixer_html(monkeypatch)
+
+    for suffix in ("_play", "_pause", "_stop", "_download", "_master", "_status"):
+        assert f'id="mixer_t{suffix}"' in html
+    # STEMS is interpolated via json.dumps, so double-quoted.
+    for stem in MIXER_STEMS:
+        assert f'"{stem}"' in html
+
+
+def test_mixer_escapes_song_name_for_js(monkeypatch):
+    """A song named "it's" must not break the script or inject markup.
+
+    The name reaches JS string literals and the mixer key becomes element
+    ids, so both interpolations need quoting (json.dumps) and sanitising.
+    """
+    html = _rendered_mixer_html(monkeypatch, song="it's")
+
+    # json.dumps keeps the apostrophe inside a double-quoted JS string.
+    assert 'const SONG_NAME = "it\'s";' in html
+    assert 'a.download = SONG_NAME + "_mix.wav";' in html
+    # The component key survives as a valid element id.
+    assert 'id="mixer_it_s_status"' in html
