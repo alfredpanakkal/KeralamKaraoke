@@ -567,6 +567,44 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
             return `${{m}}:${{s.toString().padStart(2, '0')}}`;
           }}
 
+          // Sum the stems into one buffer, honouring per-stem and master gains.
+          // This is what makes master-only pitch shifting possible: PitchShifter
+          // plays a single AudioBuffer, so it gets the sum rather than a node.
+          function rebuildMixedBuffer() {{
+            const first = buffers[STEMS[0]];
+            if (!first) return null;
+            const sr = first.sampleRate;
+            // Stems from one Demucs run are equal length, but a truncated file
+            // should not clip the mix, so the longest stem wins.
+            const length = Math.max(...STEMS.map(s => buffers[s].length));
+            const mixed = audioCtx.createBuffer(2, length, sr);
+
+            for (let stem of STEMS) {{
+              const gain = parseFloat(stemSliders[stem].value) / 100;
+              if (gain === 0) continue;
+              const left = buffers[stem].getChannelData(0);
+              const hasRight = buffers[stem].numberOfChannels > 1;
+              const right = hasRight ? buffers[stem].getChannelData(1) : left;
+              for (let c = 0; c < 2; c++) {{
+                const src = c === 0 ? left : right;
+                const dst = mixed.getChannelData(c);
+                for (let i = 0; i < src.length; i++) dst[i] += src[i] * gain;
+              }}
+            }}
+
+            const master = parseFloat(masterSlider.value) / 100;
+            for (let c = 0; c < 2; c++) {{
+              const dst = mixed.getChannelData(c);
+              for (let i = 0; i < dst.length; i++) {{
+                // Clamp: four stems at 100% routinely sum past full scale and
+                // an unclamped sum wraps around into loud distortion.
+                const v = dst[i] * master;
+                dst[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+              }}
+            }}
+            return mixed;
+          }}
+
           async function loadAudio() {{
             try {{
               audioCtx = new (window.AudioContext || window.webkitAudioContext)();

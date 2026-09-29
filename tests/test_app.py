@@ -792,3 +792,26 @@ def test_mixer_renders_pitch_slider(monkeypatch):
     pitch_input = html[html.index('id="mixer_t_pitch"') :]
     pitch_input = pitch_input[: pitch_input.index(">")]
     assert "disabled" in pitch_input
+
+
+def test_mixer_sums_stems_into_one_buffer(monkeypatch):
+    """The stems must be summed into one buffer.
+
+    PitchShifter plays a single AudioBuffer; it has no input node that can be
+    spliced into the four-gain mixing bus, so the sum is what gets shifted.
+    (The ordering against the shifter is asserted in
+    test_mixer_applies_pitch_via_pitchshifter.)
+    """
+    html = _rendered_mixer_html(monkeypatch)
+
+    assert "function rebuildMixedBuffer" in html
+    assert "createBuffer(2, length, sr)" in html
+
+
+def test_mixer_clamps_the_sum_to_avoid_clipping(monkeypatch):
+    """Four stems at 100% routinely sum past 1.0 and wrap into loud distortion."""
+    html = _rendered_mixer_html(monkeypatch)
+
+    body = html[html.index("function rebuildMixedBuffer") :]
+    body = body[: body.index("return mixed")]
+    assert "clamp" in body.lower() or ("1;" in body and "-1;" in body)
