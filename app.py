@@ -480,6 +480,12 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
         </div>
 
         <div class="master-row">
+          <span class="master-label">Pitch</span>
+          <input type="range" class="stem-slider" id="{key}_pitch" min="-12" max="12" value="0" step="1" disabled>
+          <span class="stem-value" id="{key}_pitch_val">0 st</span>
+        </div>
+
+        <div class="master-row">
           <span class="master-label">Master</span>
           <input type="range" class="stem-slider" id="{key}_master" min="0" max="150" value="100" step="1">
           <span class="stem-value" id="{key}_master_val">100%</span>
@@ -495,7 +501,9 @@ def _render_mixer(stem_urls: dict[str, str], song_name: str) -> None:
         </div>
       </div>
 
-      <script>
+      <script type="module">
+        import {{ PitchShifter }} from '/app/static/soundtouchjs/soundtouch.min.js';
+
         (function() {{
           const KEY = "{key}";
           const STEMS = {list(STEMS)};

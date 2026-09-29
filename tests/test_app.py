@@ -743,3 +743,52 @@ def test_an_unreadable_upload_warns_and_still_separates(monkeypatch, tmp_path):
     # The separation still ran: the warning is advisory.
     assert len(calls) == 1
     assert fake.spinners[0] == "Separating vocals from instrumental... (1-3 min)"
+
+
+# --------------------------------------------------------------------------
+# Stem mixer pitch shifting
+#
+# These assert on the *generated HTML string*. They cannot execute browser
+# audio, so they guard the wiring from being deleted, nothing more. The
+# behavioural check is the manual browser pass in the implementation plan.
+# --------------------------------------------------------------------------
+
+MIXER_STEMS = ("vocals", "drums", "bass", "other")
+
+
+def _rendered_mixer_html(monkeypatch, song="t"):
+    """Call _render_mixer with components.html stubbed; return the HTML."""
+    from unittest.mock import patch
+
+    import app
+
+    urls = {s: f"/app/static/stems/{song}/{s}.wav" for s in MIXER_STEMS}
+    with patch("streamlit.components.v1.html") as mock_html:
+        app._render_mixer(urls, song)
+    return mock_html.call_args[0][0]
+
+
+def test_mixer_loads_soundtouchjs_as_a_module(monkeypatch):
+    """soundtouchjs ships as an ES module, so a bare <script src> yields nothing.
+
+    If someone "simplifies" this back to a plain script tag the import silently
+    fails in the browser and pitch shifting disappears with no Python error.
+    """
+    html = _rendered_mixer_html(monkeypatch)
+
+    assert 'type="module"' in html
+    assert "/app/static/soundtouchjs/soundtouch.min.js" in html
+    assert '<script src="/app/static/soundtouchjs' not in html
+
+
+def test_mixer_renders_pitch_slider(monkeypatch):
+    html = _rendered_mixer_html(monkeypatch)
+
+    assert 'id="mixer_t_pitch"' in html
+    assert 'id="mixer_t_pitch_val"' in html
+    assert 'min="-12"' in html
+    assert 'max="12"' in html
+    # Ships disabled: it is enabled only once the module import has succeeded.
+    pitch_input = html[html.index('id="mixer_t_pitch"') :]
+    pitch_input = pitch_input[: pitch_input.index(">")]
+    assert "disabled" in pitch_input
